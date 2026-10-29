@@ -65,9 +65,11 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Snapshot APIs
 	mux.HandleFunc("GET /api/snapshots", s.handleListSnapshots)
+	mux.HandleFunc("POST /api/snapshots", s.handleCreateSnapshot)
 	mux.HandleFunc("POST /api/snapshots/create", s.handleCreateSnapshot)
 	mux.HandleFunc("POST /api/snapshots/restore", s.handleRestoreSnapshot)
 	mux.HandleFunc("DELETE /api/snapshots/{name}", s.handleDropSnapshot)
+	mux.HandleFunc("DELETE /api/snapshots", s.handleDropSnapshot)
 
 	// Migration Sandbox API
 	mux.HandleFunc("POST /api/migrate/test", s.handleDryRunMigration)
@@ -78,6 +80,8 @@ func (s *Server) Start(ctx context.Context) error {
 	// Schema Explorer & Data Preview APIs
 	mux.HandleFunc("GET /api/tables", s.handleListTables)
 	mux.HandleFunc("GET /api/tables/{name}/data", s.handleTableDataPreview)
+	mux.HandleFunc("GET /api/schema/tables", s.handleListTables)
+	mux.HandleFunc("GET /api/schema/table/data", s.handleTableDataPreview)
 
 	// Embedded UI / Static Fallback
 	mux.HandleFunc("GET /", s.handleStaticAssets)
@@ -466,6 +470,12 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDropSnapshot(w http.ResponseWriter, r *http.Request) {
 	snapName := r.PathValue("name")
+	if snapName == "" {
+		snapName = r.URL.Query().Get("name")
+	}
+	if snapName == "" {
+		snapName = r.URL.Query().Get("snapshot")
+	}
 	branch := r.URL.Query().Get("branch")
 	if snapName == "" || branch == "" {
 		writeError(w, http.StatusBadRequest, "snapshot name and branch required")
@@ -551,16 +561,18 @@ func (s *Server) handlePruneBranches(w http.ResponseWriter, r *http.Request) {
 // -------------------------------------------------------------
 
 func (s *Server) handleListTables(w http.ResponseWriter, r *http.Request) {
+	targetDb := r.URL.Query().Get("db")
 	branch := r.URL.Query().Get("branch")
-	if branch == "" {
-		branch = s.watcher.CurrentBranch()
-	}
-
-	prefix := s.cfg.EffectivePrefix()
-	baseDb := s.cfg.EffectiveBaseDatabase()
-	targetDb := git.SanitizeBranchToDatabaseName(branch, prefix)
-	if branch == "main" || branch == "master" {
-		targetDb = baseDb
+	if targetDb == "" {
+		if branch == "" {
+			branch = s.watcher.CurrentBranch()
+		}
+		prefix := s.cfg.EffectivePrefix()
+		baseDb := s.cfg.EffectiveBaseDatabase()
+		targetDb = git.SanitizeBranchToDatabaseName(branch, prefix)
+		if branch == "main" || branch == "master" {
+			targetDb = baseDb
+		}
 	}
 
 	tables, err := s.engine.ListTableSummaries(r.Context(), targetDb)
@@ -579,9 +591,26 @@ func (s *Server) handleListTables(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTableDataPreview(w http.ResponseWriter, r *http.Request) {
 	tableName := r.PathValue("name")
+	if tableName == "" {
+		tableName = r.URL.Query().Get("table")
+	}
+	if tableName == "" {
+		writeError(w, http.StatusBadRequest, "table name required")
+		return
+	}
+
+	targetDb := r.URL.Query().Get("db")
 	branch := r.URL.Query().Get("branch")
-	if branch == "" {
-		branch = s.watcher.CurrentBranch()
+	if targetDb == "" {
+		if branch == "" {
+			branch = s.watcher.CurrentBranch()
+		}
+		prefix := s.cfg.EffectivePrefix()
+		baseDb := s.cfg.EffectiveBaseDatabase()
+		targetDb = git.SanitizeBranchToDatabaseName(branch, prefix)
+		if branch == "main" || branch == "master" {
+			targetDb = baseDb
+		}
 	}
 
 	limit := 50
@@ -596,13 +625,6 @@ func (s *Server) handleTableDataPreview(w http.ResponseWriter, r *http.Request) 
 		if o, err := strconv.Atoi(oStr); err == nil && o >= 0 {
 			offset = o
 		}
-	}
-
-	prefix := s.cfg.EffectivePrefix()
-	baseDb := s.cfg.EffectiveBaseDatabase()
-	targetDb := git.SanitizeBranchToDatabaseName(branch, prefix)
-	if branch == "main" || branch == "master" {
-		targetDb = baseDb
 	}
 
 	preview, err := s.engine.GetTableDataPreview(r.Context(), targetDb, tableName, limit, offset)
