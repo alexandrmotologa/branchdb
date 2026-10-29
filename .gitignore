@@ -1,0 +1,32 @@
+# Binaries
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.html
+test_cluster/
+
+# Node / Web UI
+web/node_modules/
+web/dist/
+.pnpm-store/
+
+# OS and Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment and local configs
+.env
+.env.local
+branchdb_data/
