@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { GitBranch, Database, RotateCcw, Trash2, ArrowRight, Plus, CheckCircle2, Clock, HardDrive } from 'lucide-react';
+import { GitBranch, Database, RotateCcw, Trash2, ArrowRight, Plus, CheckCircle2, Clock, HardDrive, Sparkles, Scissors } from 'lucide-react';
 import { BranchInfo } from '../types';
 
 interface BranchTreeProps {
@@ -8,6 +8,7 @@ interface BranchTreeProps {
   onCheckout: (name: string) => Promise<void>;
   onReset: (name: string) => Promise<void>;
   onDrop: (name: string) => Promise<void>;
+  onPrune: () => Promise<void>;
 }
 
 export const BranchTree: React.FC<BranchTreeProps> = ({
@@ -16,10 +17,12 @@ export const BranchTree: React.FC<BranchTreeProps> = ({
   onCheckout,
   onReset,
   onDrop,
+  onPrune,
 }) => {
   const [newBranchInput, setNewBranchInput] = useState('');
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,6 +30,7 @@ export const BranchTree: React.FC<BranchTreeProps> = ({
     try {
       setLoadingAction('create');
       setErrorMsg(null);
+      setSuccessMsg(null);
       await onCheckout(newBranchInput.trim());
       setNewBranchInput('');
     } catch (err: any) {
@@ -43,7 +47,9 @@ export const BranchTree: React.FC<BranchTreeProps> = ({
     try {
       setLoadingAction(`reset-${name}`);
       setErrorMsg(null);
+      setSuccessMsg(null);
       await onReset(name);
+      setSuccessMsg(`Branch '${name}' successfully reset from template.`);
     } catch (err: any) {
       setErrorMsg(err.message || 'Reset failed');
     } finally {
@@ -58,9 +64,28 @@ export const BranchTree: React.FC<BranchTreeProps> = ({
     try {
       setLoadingAction(`drop-${name}`);
       setErrorMsg(null);
+      setSuccessMsg(null);
       await onDrop(name);
+      setSuccessMsg(`Branch '${name}' deleted.`);
     } catch (err: any) {
       setErrorMsg(err.message || 'Drop failed');
+    } finally {
+      setLoadingAction(null);
+    }
+  };
+
+  const handlePruneClick = async () => {
+    if (!confirm("Prune all database branches that have been merged or deleted from Git?")) {
+      return;
+    }
+    try {
+      setLoadingAction('prune');
+      setErrorMsg(null);
+      setSuccessMsg(null);
+      await onPrune();
+      setSuccessMsg('Orphan branches pruned successfully.');
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Pruning failed');
     } finally {
       setLoadingAction(null);
     }
@@ -83,28 +108,46 @@ export const BranchTree: React.FC<BranchTreeProps> = ({
           </p>
         </div>
 
-        <form onSubmit={handleCreate} className="flex items-center gap-2">
-          <input
-            type="text"
-            value={newBranchInput}
-            onChange={(e) => setNewBranchInput(e.target.value)}
-            placeholder="e.g. feat/user-auth"
-            className="px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-emerald-500/50 w-52"
-          />
+        <div className="flex items-center gap-2 flex-wrap">
           <button
-            type="submit"
-            disabled={loadingAction === 'create' || !newBranchInput.trim()}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-xs font-medium text-white transition-colors"
+            onClick={handlePruneClick}
+            disabled={loadingAction === 'prune'}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 border border-slate-700 transition-colors"
+            title="Clean up branches whose Git branches have been merged or deleted"
           >
-            <Plus className="w-3.5 h-3.5" />
-            Fork Branch
+            <Scissors className={`w-3.5 h-3.5 ${loadingAction === 'prune' ? 'animate-spin' : ''}`} />
+            Prune Merged
           </button>
-        </form>
+
+          <form onSubmit={handleCreate} className="flex items-center gap-2">
+            <input
+              type="text"
+              value={newBranchInput}
+              onChange={(e) => setNewBranchInput(e.target.value)}
+              placeholder="e.g. feat/user-auth"
+              className="px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-emerald-500/50 w-44"
+            />
+            <button
+              type="submit"
+              disabled={loadingAction === 'create' || !newBranchInput.trim()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-xs font-medium text-white transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Fork
+            </button>
+          </form>
+        </div>
       </div>
 
       {errorMsg && (
         <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-xs text-red-400">
           {errorMsg}
+        </div>
+      )}
+
+      {successMsg && (
+        <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-400">
+          {successMsg}
         </div>
       )}
 
@@ -161,7 +204,7 @@ export const BranchTree: React.FC<BranchTreeProps> = ({
         <div className="pl-6 border-l-2 border-slate-800/80 ml-5 space-y-3">
           {childBranches.length === 0 ? (
             <div className="py-8 text-center text-xs text-slate-500 bg-slate-900/20 rounded-xl border border-dashed border-slate-800">
-              No feature branches created yet. Switch Git branches or click "Fork Branch" above.
+              No feature branches created yet. Switch Git branches or click "Fork" above.
             </div>
           ) : (
             childBranches.map((branch) => {

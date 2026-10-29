@@ -17,6 +17,8 @@ type Config struct {
 	UpstreamSSLMode  string `json:"upstream_ssl_mode"`
 	BaseDatabase     string `json:"base_database"`
 	BranchPrefix     string `json:"branch_prefix"`
+	Namespace        string `json:"namespace"`
+	SeedFile         string `json:"seed_file"`
 	RepoPath         string `json:"repo_path"`
 	BranchOverride   string `json:"branch_override"`
 	StudioHost       string `json:"studio_host"`
@@ -73,6 +75,12 @@ func DefaultConfig() *Config {
 		}
 	}
 
+	namespace := os.Getenv("BRANCHDB_NAMESPACE")
+	seedFile := os.Getenv("BRANCHDB_SEED_FILE")
+	if seedFile == "" {
+		seedFile = ".branchdb/seed.sql"
+	}
+
 	return &Config{
 		ProxyHost:        "127.0.0.1",
 		ProxyPort:        proxyPort,
@@ -83,6 +91,8 @@ func DefaultConfig() *Config {
 		UpstreamSSLMode:  "disable",
 		BaseDatabase:     "branchdb_main",
 		BranchPrefix:     "branchdb_",
+		Namespace:        namespace,
+		SeedFile:         seedFile,
 		RepoPath:         ".",
 		BranchOverride:   os.Getenv("BRANCHDB_BRANCH"),
 		StudioHost:       "127.0.0.1",
@@ -90,6 +100,22 @@ func DefaultConfig() *Config {
 		EnableStudio:     true,
 		DataDir:          ".branchdb",
 	}
+}
+
+// EffectivePrefix returns the active prefix considering any configured namespace.
+func (c *Config) EffectivePrefix() string {
+	if c.Namespace != "" {
+		return c.Namespace + "_" + c.BranchPrefix
+	}
+	return c.BranchPrefix
+}
+
+// EffectiveBaseDatabase returns the effective base database name.
+func (c *Config) EffectiveBaseDatabase() string {
+	if c.Namespace != "" {
+		return c.Namespace + "_" + c.BaseDatabase
+	}
+	return c.BaseDatabase
 }
 
 // ProxyAddr returns the proxy listen address string.
@@ -107,7 +133,7 @@ func (c *Config) StudioAddr() string {
 	return fmt.Sprintf("%s:%d", c.StudioHost, c.StudioPort)
 }
 
-// UpstreamDSN formats a PostgreSQL connection string for admin tasks.
+// UpstreamDSN formats a PostgreSQL connection string for upstream admin tasks.
 func (c *Config) UpstreamDSN(database string) string {
 	if database == "" {
 		database = "postgres"
@@ -118,4 +144,17 @@ func (c *Config) UpstreamDSN(database string) string {
 	}
 	return fmt.Sprintf("postgres://%s@%s:%d/%s?sslmode=%s",
 		c.UpstreamUser, c.UpstreamHost, c.UpstreamPort, database, c.UpstreamSSLMode)
+}
+
+// ProxyDSN formats a PostgreSQL connection string pointing to the BranchDB proxy.
+func (c *Config) ProxyDSN(database string) string {
+	if database == "" {
+		database = "postgres"
+	}
+	if c.UpstreamPassword != "" {
+		return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+			c.UpstreamUser, c.UpstreamPassword, c.ProxyHost, c.ProxyPort, database)
+	}
+	return fmt.Sprintf("postgres://%s@%s:%d/%s?sslmode=disable",
+		c.UpstreamUser, c.ProxyHost, c.ProxyPort, database)
 }

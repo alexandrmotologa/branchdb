@@ -126,9 +126,65 @@ Permanently drops a branch database:
 branchdb drop feat/user-auth
 ```
 
+### `branchdb snapshot <command>`
+Manages point-in-time branch checkpoints without resetting to main:
+```bash
+# Create a snapshot of the current branch
+branchdb snapshot create checkpoint-1
+
+# List snapshots for a branch
+branchdb snapshot list feat/user-auth
+
+# Restore the branch to a snapshot in under 500ms
+branchdb snapshot restore checkpoint-1
+
+# Delete a snapshot
+branchdb snapshot drop checkpoint-1
+```
+
+### `branchdb migrate test <file.sql>`
+Validates a migration SQL script in an ephemeral clone sandbox without modifying your active working branch:
+```bash
+branchdb migrate test ./migrations/20261029_add_teams.sql
+```
+
+### `branchdb seed [branch-name]`
+Executes SQL seed fixtures against a branch database:
+```bash
+branchdb seed feat/user-auth --file ./seeds/test_users.sql
+```
+
+### `branchdb prune`
+Deletes abandoned branch databases whose Git branches were merged or deleted:
+```bash
+# Preview databases eligible for cleanup
+branchdb prune --dry-run
+
+# Prune databases for branches merged into main
+branchdb prune --merged
+
+# Force delete databases without an active local Git branch
+branchdb prune --force
+```
+
+### `branchdb exec -- <command>`
+Runs a command with PostgreSQL environment variables configured to route through BranchDB:
+```bash
+branchdb exec -- npm test
+branchdb exec -- npx prisma migrate dev
+```
+
 ## Web Studio & REST API
 
-The embedded Web Studio provides an interface for managing branch databases and monitoring traffic.
+The embedded Web Studio provides a visual dashboard for database branching, schema exploration, and traffic analysis.
+
+### Features
+- **Branch Topology**: Interactive visualization of branch hierarchies, disk usage, and active client connections.
+- **Point-in-Time Snapshots**: Create, restore, and delete branch checkpoints with one click.
+- **Schema Explorer**: Inspect tables, column types, nullability, default values, and preview live table rows.
+- **Schema Diff Viewer**: Visual side-by-side diff between any two branch databases with generated migration SQL.
+- **SQL Sandbox**: Run queries directly against any branch database with formatted results.
+- **Real-Time Traffic**: View query rates, bytes transferred, and active client connections.
 
 ### REST Endpoints
 - `GET /api/status`: Returns proxy configuration, active branch, target database, and runtime metrics.
@@ -139,6 +195,15 @@ The embedded Web Studio provides an interface for managing branch databases and 
 - `GET /api/diff?from=<db>&to=<db>`: Compares two database schemas and returns structural differences with migration SQL.
 - `POST /api/query`: Executes a SQL query in an isolated branch database and returns tabular results.
 - `GET /api/metrics`: Returns active connections, total query count, and bytes transferred.
+- `GET /api/snapshots?branch=<branch>`: Lists snapshots for the specified branch.
+- `POST /api/snapshots`: Creates a new snapshot checkpoint for a branch.
+- `POST /api/snapshots/restore`: Restores a branch to a saved snapshot state.
+- `DELETE /api/snapshots/:name?branch=<branch>`: Deletes a snapshot checkpoint.
+- `POST /api/migrate/test`: Runs a dry-run migration in an ephemeral clone sandbox.
+- `POST /api/seed`: Executes a SQL seed script on a branch database.
+- `POST /api/prune`: Scans and cleans up orphan branch databases.
+- `GET /api/schema/tables?db=<db>`: Lists tables and column definitions in a database.
+- `GET /api/schema/table/data?db=<db>&table=<table>&limit=<n>`: Fetches paginated rows for table data preview.
 
 ## Performance Benchmarks
 

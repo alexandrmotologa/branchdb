@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Navbar } from './components/Navbar';
 import { BranchTree } from './components/BranchTree';
+import { SnapshotManager } from './components/SnapshotManager';
 import { SchemaDiffViewer } from './components/SchemaDiffViewer';
+import { SchemaExplorer } from './components/SchemaExplorer';
 import { ActiveConnections } from './components/ActiveConnections';
 import { SqlSandbox } from './components/SqlSandbox';
 import { DiskUsageBar } from './components/DiskUsageBar';
@@ -83,6 +85,19 @@ export const App: React.FC = () => {
     await fetchState();
   };
 
+  const handlePrune = async () => {
+    const res = await fetch('/api/prune', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ merged_only: false, dry_run: false }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || 'Pruning failed');
+    }
+    await fetchState();
+  };
+
   const activeBranchName = status?.active_branch || 'main';
 
   return (
@@ -105,11 +120,26 @@ export const App: React.FC = () => {
             onCheckout={handleCheckout}
             onReset={handleReset}
             onDrop={handleDrop}
+            onPrune={handlePrune}
+          />
+        )}
+
+        {activeTab === 'snapshots' && (
+          <SnapshotManager
+            branches={branches}
+            activeBranch={activeBranchName}
           />
         )}
 
         {activeTab === 'diff' && (
           <SchemaDiffViewer
+            branches={branches}
+            activeBranch={activeBranchName}
+          />
+        )}
+
+        {activeTab === 'explorer' && (
+          <SchemaExplorer
             branches={branches}
             activeBranch={activeBranchName}
           />

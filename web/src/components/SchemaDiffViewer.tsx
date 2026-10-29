@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Layers, ArrowRight, Copy, Check, AlertCircle, FileCode, PlusCircle, MinusCircle, RefreshCw } from 'lucide-react';
-import { BranchInfo, DiffResponse } from '../types';
+import { Layers, ArrowRight, Copy, Check, AlertCircle, FileCode, PlusCircle, MinusCircle, RefreshCw, Play, Download, CheckCircle2, X } from 'lucide-react';
+import { BranchInfo, DiffResponse, DryRunResult } from '../types';
 
 interface SchemaDiffViewerProps {
   branches: BranchInfo[];
@@ -17,6 +17,13 @@ export const SchemaDiffViewer: React.FC<SchemaDiffViewerProps> = ({
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
+
+  // Dry-Run state
+  const [isDryRunModalOpen, setIsDryRunModalOpen] = useState<boolean>(false);
+  const [dryRunSQL, setDryRunSQL] = useState<string>('');
+  const [isDryRunning, setIsDryRunning] = useState<boolean>(false);
+  const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
+  const [dryRunError, setDryRunError] = useState<string | null>(null);
 
   useEffect(() => {
     if (branches.length > 0) {
@@ -59,6 +66,52 @@ export const SchemaDiffViewer: React.FC<SchemaDiffViewerProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleDownload = () => {
+    if (!diffData || !diffData.migration_sql) return;
+    const blob = new Blob([diffData.migration_sql.join('\n\n')], { type: 'text/sql' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${new Date().toISOString().slice(0, 10)}_migration_${toDb}.sql`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const openDryRunModal = () => {
+    if (diffData && diffData.migration_sql) {
+      setDryRunSQL(diffData.migration_sql.join('\n\n'));
+    }
+    setDryRunResult(null);
+    setDryRunError(null);
+    setIsDryRunModalOpen(true);
+  };
+
+  const executeDryRun = async () => {
+    if (!dryRunSQL.trim()) return;
+    try {
+      setIsDryRunning(true);
+      setDryRunError(null);
+      const res = await fetch('/api/migrate/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          branch: activeBranch,
+          sql: dryRunSQL.trim(),
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Dry run execution error');
+      }
+      setDryRunResult(data);
+    } catch (err: any) {
+      setDryRunError(err.message || 'Dry run failed');
+    } finally {
+      setIsDryRunning(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Selector Controls */}
@@ -97,18 +150,28 @@ export const SchemaDiffViewer: React.FC<SchemaDiffViewerProps> = ({
           </div>
         </div>
 
-        <button
-          onClick={fetchDiff}
-          disabled={isLoading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 transition-colors w-full sm:w-auto justify-center"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-emerald-400' : ''}`} />
-          Compare Schemas
-        </button>
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <button
+            onClick={openDryRunModal}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 text-xs font-medium transition-colors"
+          >
+            <Play className="w-3.5 h-3.5 fill-current" />
+            Dry-Run Sandbox
+          </button>
+
+          <button
+            onClick={fetchDiff}
+            disabled={isLoading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 transition-colors"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-emerald-400' : ''}`} />
+            Compare
+          </button>
+        </div>
       </div>
 
       {errorMsg && (
-        <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-xs text-red-400">
+        <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-xs text-red-400 font-mono">
           <AlertCircle className="w-4 h-4 flex-shrink-0" />
           <span>{errorMsg}</span>
         </div>
@@ -116,7 +179,7 @@ export const SchemaDiffViewer: React.FC<SchemaDiffViewerProps> = ({
 
       {diffData && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Visual Structural Diffs */}
+          {/* Structural Differences */}
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-white flex items-center gap-2">
@@ -136,7 +199,6 @@ export const SchemaDiffViewer: React.FC<SchemaDiffViewerProps> = ({
               </div>
             ) : (
               <div className="space-y-3">
-                {/* Added Tables */}
                 {diffData.diff.tables_added.map((tbl) => (
                   <div key={tbl.name} className="p-3.5 rounded-lg bg-emerald-950/20 border border-emerald-500/30">
                     <div className="flex items-center gap-2 text-xs font-mono font-medium text-emerald-300">
@@ -153,7 +215,6 @@ export const SchemaDiffViewer: React.FC<SchemaDiffViewerProps> = ({
                   </div>
                 ))}
 
-                {/* Dropped Tables */}
                 {diffData.diff.tables_dropped.map((tblName) => (
                   <div key={tblName} className="p-3.5 rounded-lg bg-red-950/20 border border-red-500/30">
                     <div className="flex items-center gap-2 text-xs font-mono font-medium text-red-300">
@@ -163,7 +224,6 @@ export const SchemaDiffViewer: React.FC<SchemaDiffViewerProps> = ({
                   </div>
                 ))}
 
-                {/* Altered Tables */}
                 {Object.entries(diffData.diff.table_diffs).map(([tblName, tblDiff]) => (
                   <div key={tblName} className="p-3.5 rounded-lg bg-slate-900/60 border border-slate-800 space-y-2">
                     <div className="text-xs font-mono font-semibold text-slate-200">
@@ -208,15 +268,29 @@ export const SchemaDiffViewer: React.FC<SchemaDiffViewerProps> = ({
                 <FileCode className="w-4 h-4 text-emerald-400" />
                 Forward Migration SQL
               </h3>
-              {diffData.migration_sql && diffData.migration_sql.length > 0 && (
-                <button
-                  onClick={handleCopy}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs font-mono text-slate-200 transition-colors"
-                >
-                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  {copied ? 'Copied!' : 'Copy SQL'}
-                </button>
-              )}
+
+              <div className="flex items-center gap-2">
+                {diffData.migration_sql && diffData.migration_sql.length > 0 && (
+                  <>
+                    <button
+                      onClick={handleCopy}
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs font-mono text-slate-200 transition-colors"
+                    >
+                      {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      {copied ? 'Copied' : 'Copy'}
+                    </button>
+
+                    <button
+                      onClick={handleDownload}
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs font-mono text-slate-200 transition-colors"
+                      title="Download as SQL file"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      Export
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
             <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 font-mono text-xs overflow-x-auto min-h-[300px]">
@@ -229,6 +303,74 @@ export const SchemaDiffViewer: React.FC<SchemaDiffViewerProps> = ({
                   -- No migration required. Schemas are identical.
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dry-Run Sandbox Modal */}
+      {isDryRunModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0D121F] border border-slate-800 rounded-2xl max-w-2xl w-full p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2 text-white font-semibold text-sm">
+                <Play className="w-4 h-4 text-purple-400 fill-current" />
+                <span>Dry-Run Migration Sandbox</span>
+              </div>
+              <button
+                onClick={() => setIsDryRunModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-400">
+              Runs in an isolated ephemeral clone of branch <strong className="text-emerald-400">{activeBranch}</strong>. The sandbox is automatically destroyed after execution.
+            </p>
+
+            <textarea
+              value={dryRunSQL}
+              onChange={(e) => setDryRunSQL(e.target.value)}
+              rows={6}
+              className="w-full p-3 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 focus:outline-none focus:border-purple-500/50 resize-y"
+              placeholder="Paste migration SQL to dry-run test..."
+            />
+
+            {dryRunError && (
+              <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-xs text-red-400 font-mono flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>{dryRunError}</span>
+              </div>
+            )}
+
+            {dryRunResult && (
+              <div className="p-3.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-xs font-mono space-y-1">
+                <div className="flex items-center gap-2 text-emerald-400 font-semibold">
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Dry-Run Passed in {dryRunResult.duration_ms}ms</span>
+                </div>
+                <div className="text-slate-300 text-[11px] pl-6">
+                  Statements executed: {dryRunResult.statements_run} | Tables affected: {dryRunResult.tables_affected.join(', ') || 'none'}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                onClick={() => setIsDryRunModalOpen(false)}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300"
+              >
+                Close
+              </button>
+              <button
+                onClick={executeDryRun}
+                disabled={isDryRunning || !dryRunSQL.trim()}
+                className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-xs font-medium text-white transition-colors"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                {isDryRunning ? 'Simulating...' : 'Run Simulation'}
+              </button>
             </div>
           </div>
         </div>

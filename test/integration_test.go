@@ -298,4 +298,124 @@ func TestEndToEndBranchingAndProxy(t *testing.T) {
 	if snap["total_connections"].(int64) < 1 {
 		t.Errorf("expected at least 1 connection in metrics, got %v", snap["total_connections"])
 	}
+
+	// 7. Test Point-In-Time Snapshots
+	t.Log("Testing Point-In-Time Snapshot creation, mutation, and restoration...")
+	snapRes, err := eng.CreateSnapshot(ctx, "feat/billing", "checkpoint-1", "branchdb_feat_billing")
+	if err != nil {
+		t.Fatalf("CreateSnapshot failed: %v", err)
+	}
+	t.Logf("Snapshot created: %s in %dms", snapRes.DatabaseName, snapRes.DurationMs)
+
+	// Mutate branch by inserting a new record
+	snapTestPool, err := pgxpool.New(ctx, featDSN)
+	if err != nil {
+		t.Fatalf("failed connecting: %v", err)
+	}
+	_, err = snapTestPool.Exec(ctx, "INSERT INTO users (username, email) VALUES ('mutated_user', 'mutated@test.com');")
+	if err != nil {
+		t.Fatalf("mutation failed: %v", err)
+	}
+	var countBeforeRestore int
+	_ = snapTestPool.QueryRow(ctx, "SELECT count(*) FROM users;").Scan(&countBeforeRestore)
+	if countBeforeRestore != 3 {
+		t.Fatalf("expected 3 users after mutation, got %d", countBeforeRestore)
+	}
+	snapTestPool.Close()
+
+	// Restore from snapshot
+	restoreRes, err := eng.RestoreSnapshot(ctx, "feat/billing", "checkpoint-1", "branchdb_feat_billing")
+	if err != nil {
+		t.Fatalf("RestoreSnapshot failed: %v", err)
+	}
+	t.Logf("Snapshot restored in %dms", restoreRes.DurationMs)
+
+	// Verify restored state has 2 users
+	snapTestPool2, err := pgxpool.New(ctx, featDSN)
+	if err != nil {
+		t.Fatalf("failed connecting: %v", err)
+	}
+	var countAfterRestore int
+	_ = snapTestPool2.QueryRow(ctx, "SELECT count(*) FROM users;").Scan(&countAfterRestore)
+	snapTestPool2.Close()
+	if countAfterRestore != 2 {
+		t.Errorf("expected 2 users after snapshot restore, got %d", countAfterRestore)
+	}
+
+	// Clean up snapshot
+	if err := eng.DropSnapshot(ctx, "feat/billing", "checkpoint-1"); err != nil {
+		t.Fatalf("DropSnapshot failed: %v", err)
+	}
+
+	// 8. Test Dry-Run Migration Sandbox
+	t.Log("Testing Dry-Run Migration Sandbox...")
+	dryRunSQL := `
+		CREATE TABLE payments (
+			id SERIAL PRIMARY KEY,
+			amount NUMERIC(10, 2) NOT NULL
+		);
+	`
+	dryRes, err := eng.DryRunMigration(ctx, "feat/billing", dryRunSQL)
+	if err != nil {
+		t.Fatalf("DryRunMigration failed: %v", err)
+	}
+	if !dryRes.Success {
+		t.Fatalf("expected dry-run to succeed, got error: %s", dryRes.Error)
+	}
+	t.Logf("Dry run migration succeeded in %dms, affected tables: %v", dryRes.DurationMs, dryRes.TablesAffected)
+
+	// Verify working branch is untouched and table does NOT exist in feat/billing
+	var tableExists bool
+	verifyPool, _ := pgxpool.New(ctx, featDSN)
+	_ = verifyPool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'payments');`).Scan(&tableExists)
+	verifyPool.Close()
+	if tableExists {
+		t.Errorf("expected dry-run table 'payments' to NOT exist on working branch, but it was found")
+	}
+
+	// 9. Test Seed Script Runner
+	t.Log("Testing Seed Script Execution...")
+	seedFile := filepath.Join(t.TempDir(), "seed.sql")
+	if err := os.WriteFile(seedFile, []byte("INSERT INTO users (username, email) VALUES ('seed_user', 'seed@example.com');"), 0644); err != nil {
+		t.Fatalf("writing seed file failed: %v", err)
+	}
+	bytesSeeded, err := eng.RunSeedScript(ctx, "branchdb_feat_billing", seedFile)
+	if err != nil {
+		t.Fatalf("RunSeedScript failed: %v", err)
+	}
+	if bytesSeeded == 0 {
+		t.Errorf("expected non-zero seeded bytes")
+	}
+
+	// 10. Test Schema Explorer & Data Preview
+	t.Log("Testing Schema Explorer and Table Preview...")
+	summaries, err := eng.ListTableSummaries(ctx, "branchdb_feat_billing")
+	if err != nil {
+		t.Fatalf("ListTableSummaries failed: %v", err)
+	}
+	if len(summaries) == 0 {
+		t.Fatalf("expected at least 1 table summary")
+	}
+	t.Logf("Discovered %d tables in branchdb_feat_billing (first: %s, cols: %d)",
+		len(summaries), summaries[0].Name, summaries[0].ColumnCount)
+
+	preview, err := eng.GetTableDataPreview(ctx, "branchdb_feat_billing", "users", 10, 0)
+	if err != nil {
+		t.Fatalf("GetTableDataPreview failed: %v", err)
+	}
+	if len(preview.Rows) != 3 {
+		t.Errorf("expected 3 rows in preview, got %d", len(preview.Rows))
+	}
+
+	// 11. Test Branch Pruning
+	t.Log("Testing Branch Pruning (Garbage Collection)...")
+	pruneRes, err := eng.PruneBranches(ctx, []string{"main"}, false)
+	if err != nil {
+		t.Fatalf("PruneBranches failed: %v", err)
+	}
+	t.Logf("Pruned %d orphan branches: %v (reclaimed: %d bytes)",
+		pruneRes.PrunedCount, pruneRes.PrunedBranches, pruneRes.BytesReclaimed)
+	if pruneRes.PrunedCount == 0 {
+		t.Errorf("expected feat/billing to be pruned because it is not in active list")
+	}
 }

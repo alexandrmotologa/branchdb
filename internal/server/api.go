@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,7 @@ type Server struct {
 	metrics   *proxy.Metrics
 	router    *proxy.Router
 	inspector *schema.Inspector
+	resolver  *git.Resolver
 	httpSrv   *http.Server
 }
 
@@ -43,6 +45,7 @@ func NewServer(
 		metrics:   metrics,
 		router:    router,
 		inspector: schema.NewInspector(cfg),
+		resolver:  git.NewResolver(cfg.RepoPath),
 	}
 }
 
@@ -59,6 +62,22 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/diff", s.handleSchemaDiff)
 	mux.HandleFunc("POST /api/query", s.handleExecuteQuery)
 	mux.HandleFunc("GET /api/metrics", s.handleMetrics)
+
+	// Snapshot APIs
+	mux.HandleFunc("GET /api/snapshots", s.handleListSnapshots)
+	mux.HandleFunc("POST /api/snapshots/create", s.handleCreateSnapshot)
+	mux.HandleFunc("POST /api/snapshots/restore", s.handleRestoreSnapshot)
+	mux.HandleFunc("DELETE /api/snapshots/{name}", s.handleDropSnapshot)
+
+	// Migration Sandbox API
+	mux.HandleFunc("POST /api/migrate/test", s.handleDryRunMigration)
+
+	// Prune API
+	mux.HandleFunc("POST /api/prune", s.handlePruneBranches)
+
+	// Schema Explorer & Data Preview APIs
+	mux.HandleFunc("GET /api/tables", s.handleListTables)
+	mux.HandleFunc("GET /api/tables/{name}/data", s.handleTableDataPreview)
 
 	// Embedded UI / Static Fallback
 	mux.HandleFunc("GET /", s.handleStaticAssets)
@@ -121,16 +140,19 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	activeBranch := s.watcher.CurrentBranch()
-	targetDb := git.SanitizeBranchToDatabaseName(activeBranch, s.cfg.BranchPrefix)
+	prefix := s.cfg.EffectivePrefix()
+	baseDb := s.cfg.EffectiveBaseDatabase()
+	targetDb := git.SanitizeBranchToDatabaseName(activeBranch, prefix)
 	if activeBranch == "main" || activeBranch == "master" {
-		targetDb = s.cfg.BaseDatabase
+		targetDb = baseDb
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":          "running",
 		"active_branch":   activeBranch,
 		"target_database": targetDb,
-		"base_database":   s.cfg.BaseDatabase,
+		"base_database":   baseDb,
+		"namespace":       s.cfg.Namespace,
 		"proxy_addr":      s.cfg.ProxyAddr(),
 		"upstream_addr":   s.cfg.UpstreamAddr(),
 		"metrics":         s.metrics.Snapshot(),
@@ -165,13 +187,14 @@ func (s *Server) handleCheckoutBranch(w http.ResponseWriter, r *http.Request) {
 	cleanBranch := strings.TrimSpace(req.Branch)
 	s.watcher.SetOverride(cleanBranch)
 
-	targetDb := git.SanitizeBranchToDatabaseName(cleanBranch, s.cfg.BranchPrefix)
+	prefix := s.cfg.EffectivePrefix()
+	baseDb := s.cfg.EffectiveBaseDatabase()
+	targetDb := git.SanitizeBranchToDatabaseName(cleanBranch, prefix)
 	if cleanBranch == "main" || cleanBranch == "master" {
-		targetDb = s.cfg.BaseDatabase
+		targetDb = baseDb
 	}
 
-	// Auto-clone if missing
-	res, err := s.engine.CreateBranch(r.Context(), cleanBranch, targetDb, s.cfg.BaseDatabase)
+	res, err := s.engine.CreateBranch(r.Context(), cleanBranch, targetDb, baseDb)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -202,8 +225,10 @@ func (s *Server) handleResetBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetDb := git.SanitizeBranchToDatabaseName(branch, s.cfg.BranchPrefix)
-	res, err := s.engine.ResetBranch(r.Context(), branch, targetDb, s.cfg.BaseDatabase)
+	prefix := s.cfg.EffectivePrefix()
+	baseDb := s.cfg.EffectiveBaseDatabase()
+	targetDb := git.SanitizeBranchToDatabaseName(branch, prefix)
+	res, err := s.engine.ResetBranch(r.Context(), branch, targetDb, baseDb)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -226,7 +251,8 @@ func (s *Server) handleDropBranch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetDb := git.SanitizeBranchToDatabaseName(branchName, s.cfg.BranchPrefix)
+	prefix := s.cfg.EffectivePrefix()
+	targetDb := git.SanitizeBranchToDatabaseName(branchName, prefix)
 	if err := s.engine.DropBranch(r.Context(), branchName, targetDb); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -245,12 +271,15 @@ func (s *Server) handleSchemaDiff(w http.ResponseWriter, r *http.Request) {
 	fromDb := r.URL.Query().Get("from")
 	toDb := r.URL.Query().Get("to")
 
+	baseDb := s.cfg.EffectiveBaseDatabase()
+	prefix := s.cfg.EffectivePrefix()
+
 	if fromDb == "" {
-		fromDb = s.cfg.BaseDatabase
+		fromDb = baseDb
 	}
 	if toDb == "" {
 		activeBranch := s.watcher.CurrentBranch()
-		toDb = git.SanitizeBranchToDatabaseName(activeBranch, s.cfg.BranchPrefix)
+		toDb = git.SanitizeBranchToDatabaseName(activeBranch, prefix)
 	}
 
 	fromSchema, err := s.inspector.InspectDatabase(r.Context(), fromDb)
@@ -293,9 +322,11 @@ func (s *Server) handleExecuteQuery(w http.ResponseWriter, r *http.Request) {
 		targetBranch = s.watcher.CurrentBranch()
 	}
 
-	targetDb := git.SanitizeBranchToDatabaseName(targetBranch, s.cfg.BranchPrefix)
+	prefix := s.cfg.EffectivePrefix()
+	baseDb := s.cfg.EffectiveBaseDatabase()
+	targetDb := git.SanitizeBranchToDatabaseName(targetBranch, prefix)
 	if targetBranch == "main" || targetBranch == "master" {
-		targetDb = s.cfg.BaseDatabase
+		targetDb = baseDb
 	}
 
 	dsn := s.cfg.UpstreamDSN(targetDb)
@@ -350,4 +381,235 @@ func (s *Server) handleExecuteQuery(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.metrics.Snapshot())
+}
+
+// -------------------------------------------------------------
+// SNAPSHOT HANDLERS
+// -------------------------------------------------------------
+
+func (s *Server) handleListSnapshots(w http.ResponseWriter, r *http.Request) {
+	branch := r.URL.Query().Get("branch")
+	snapshots, err := s.engine.ListSnapshots(r.Context(), branch)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"branch":    branch,
+		"snapshots": snapshots,
+		"total":     len(snapshots),
+	})
+}
+
+func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Branch   string `json:"branch"`
+		Snapshot string `json:"snapshot"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Snapshot == "" {
+		writeError(w, http.StatusBadRequest, "snapshot name required")
+		return
+	}
+
+	branch := req.Branch
+	if branch == "" {
+		branch = s.watcher.CurrentBranch()
+	}
+
+	prefix := s.cfg.EffectivePrefix()
+	baseDb := s.cfg.EffectiveBaseDatabase()
+	branchDb := git.SanitizeBranchToDatabaseName(branch, prefix)
+	if branch == "main" || branch == "master" {
+		branchDb = baseDb
+	}
+
+	res, err := s.engine.CreateSnapshot(r.Context(), branch, req.Snapshot, branchDb)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Branch   string `json:"branch"`
+		Snapshot string `json:"snapshot"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Snapshot == "" {
+		writeError(w, http.StatusBadRequest, "snapshot name required")
+		return
+	}
+
+	branch := req.Branch
+	if branch == "" {
+		branch = s.watcher.CurrentBranch()
+	}
+
+	prefix := s.cfg.EffectivePrefix()
+	baseDb := s.cfg.EffectiveBaseDatabase()
+	branchDb := git.SanitizeBranchToDatabaseName(branch, prefix)
+	if branch == "main" || branch == "master" {
+		branchDb = baseDb
+	}
+
+	res, err := s.engine.RestoreSnapshot(r.Context(), branch, req.Snapshot, branchDb)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.router.InvalidateCache(branchDb)
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleDropSnapshot(w http.ResponseWriter, r *http.Request) {
+	snapName := r.PathValue("name")
+	branch := r.URL.Query().Get("branch")
+	if snapName == "" || branch == "" {
+		writeError(w, http.StatusBadRequest, "snapshot name and branch required")
+		return
+	}
+
+	if err := s.engine.DropSnapshot(r.Context(), branch, snapName); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"message":  "snapshot dropped",
+		"snapshot": snapName,
+		"branch":   branch,
+	})
+}
+
+// -------------------------------------------------------------
+// DRY RUN MIGRATION HANDLER
+// -------------------------------------------------------------
+
+func (s *Server) handleDryRunMigration(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Branch string `json:"branch"`
+		SQL    string `json:"sql"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SQL == "" {
+		writeError(w, http.StatusBadRequest, "missing sql migration payload")
+		return
+	}
+
+	branch := req.Branch
+	if branch == "" {
+		branch = s.watcher.CurrentBranch()
+	}
+
+	res, err := s.engine.DryRunMigration(r.Context(), branch, req.SQL)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, res)
+}
+
+// -------------------------------------------------------------
+// PRUNE HANDLER
+// -------------------------------------------------------------
+
+func (s *Server) handlePruneBranches(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		MergedOnly bool `json:"merged_only"`
+		DryRun     bool `json:"dry_run"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	var activeBranches []string
+	var err error
+
+	if req.MergedOnly {
+		activeBranches, err = s.resolver.ListMergedGitBranches("main")
+	} else {
+		activeBranches, err = s.resolver.ListAllGitBranches()
+	}
+
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("git branches query failed: %v", err))
+		return
+	}
+
+	res, err := s.engine.PruneBranches(r.Context(), activeBranches, req.DryRun)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, res)
+}
+
+// -------------------------------------------------------------
+// SCHEMA EXPLORER & TABLE DATA HANDLERS
+// -------------------------------------------------------------
+
+func (s *Server) handleListTables(w http.ResponseWriter, r *http.Request) {
+	branch := r.URL.Query().Get("branch")
+	if branch == "" {
+		branch = s.watcher.CurrentBranch()
+	}
+
+	prefix := s.cfg.EffectivePrefix()
+	baseDb := s.cfg.EffectiveBaseDatabase()
+	targetDb := git.SanitizeBranchToDatabaseName(branch, prefix)
+	if branch == "main" || branch == "master" {
+		targetDb = baseDb
+	}
+
+	tables, err := s.engine.ListTableSummaries(r.Context(), targetDb)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"branch":   branch,
+		"database": targetDb,
+		"tables":   tables,
+		"total":    len(tables),
+	})
+}
+
+func (s *Server) handleTableDataPreview(w http.ResponseWriter, r *http.Request) {
+	tableName := r.PathValue("name")
+	branch := r.URL.Query().Get("branch")
+	if branch == "" {
+		branch = s.watcher.CurrentBranch()
+	}
+
+	limit := 50
+	if lStr := r.URL.Query().Get("limit"); lStr != "" {
+		if l, err := strconv.Atoi(lStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	offset := 0
+	if oStr := r.URL.Query().Get("offset"); oStr != "" {
+		if o, err := strconv.Atoi(oStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+
+	prefix := s.cfg.EffectivePrefix()
+	baseDb := s.cfg.EffectiveBaseDatabase()
+	targetDb := git.SanitizeBranchToDatabaseName(branch, prefix)
+	if branch == "main" || branch == "master" {
+		targetDb = baseDb
+	}
+
+	preview, err := s.engine.GetTableDataPreview(r.Context(), targetDb, tableName, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, preview)
 }

@@ -35,11 +35,13 @@ func NewRouter(cfg *config.Config, watcher *git.Watcher, engine *engine.Engine) 
 // and ensures it is cloned and ready on the PostgreSQL instance.
 func (r *Router) ResolveTargetDatabase(ctx context.Context, requestedDb string) (string, string, error) {
 	activeBranch := r.watcher.CurrentBranch()
-	targetDbName := git.SanitizeBranchToDatabaseName(activeBranch, r.cfg.BranchPrefix)
+	baseDb := r.cfg.EffectiveBaseDatabase()
+	prefix := r.cfg.EffectivePrefix()
+	targetDbName := git.SanitizeBranchToDatabaseName(activeBranch, prefix)
 
 	// If branch is "main" or matches base database
 	if activeBranch == "main" || activeBranch == "master" {
-		targetDbName = r.cfg.BaseDatabase
+		targetDbName = baseDb
 	}
 
 	r.mu.RLock()
@@ -56,14 +58,14 @@ func (r *Router) ResolveTargetDatabase(ctx context.Context, requestedDb string) 
 	}
 
 	// If target is not base, ensure it exists or clone from base
-	if targetDbName != r.cfg.BaseDatabase {
-		res, err := r.engine.CreateBranch(ctx, activeBranch, targetDbName, r.cfg.BaseDatabase)
+	if targetDbName != baseDb {
+		res, err := r.engine.CreateBranch(ctx, activeBranch, targetDbName, baseDb)
 		if err != nil {
 			return activeBranch, targetDbName, fmt.Errorf("failed ensuring branch database %s: %w", targetDbName, err)
 		}
 		if res.Created {
 			log.Printf("[router] Auto-provisioned branch database %s from template %s in %dms",
-				targetDbName, r.cfg.BaseDatabase, res.DurationMs)
+				targetDbName, baseDb, res.DurationMs)
 		}
 	}
 

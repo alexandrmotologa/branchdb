@@ -1,9 +1,11 @@
 package git
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -97,6 +99,88 @@ func (r *Resolver) GetActiveBranch() (string, error) {
 	}
 
 	return "main", nil
+}
+
+// ListAllGitBranches enumerates all existing local branches in the repository.
+func (r *Resolver) ListAllGitBranches() ([]string, error) {
+	// First attempt via git command if available
+	cmd := exec.Command("git", "-C", r.RepoPath, "branch", "--format=%(refname:short)")
+	out, err := cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(out), "\n")
+		var branches []string
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" {
+				branches = append(branches, trimmed)
+			}
+		}
+		if len(branches) > 0 {
+			return branches, nil
+		}
+	}
+
+	// Filesystem fallback: scan .git/refs/heads
+	gitDir, err := r.FindGitDir()
+	if err != nil {
+		return []string{"main"}, err
+	}
+
+	headsDir := filepath.Join(gitDir, "refs", "heads")
+	var branches []string
+	_ = filepath.Walk(headsDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr == nil && !info.IsDir() {
+			rel, relErr := filepath.Rel(headsDir, path)
+			if relErr == nil {
+				branches = append(branches, filepath.ToSlash(rel))
+			}
+		}
+		return nil
+	})
+
+	// Also inspect packed-refs if present
+	packedPath := filepath.Join(gitDir, "packed-refs")
+	if data, pErr := os.ReadFile(packedPath); pErr == nil {
+		scanner := bufio.NewScanner(bytes.NewReader(data))
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if strings.HasPrefix(line, "#") || strings.HasPrefix(line, "^") {
+				continue
+			}
+			parts := strings.Fields(line)
+			if len(parts) >= 2 && strings.HasPrefix(parts[1], "refs/heads/") {
+				branches = append(branches, strings.TrimPrefix(parts[1], "refs/heads/"))
+			}
+		}
+	}
+
+	if len(branches) == 0 {
+		branches = append(branches, "main")
+	}
+
+	return branches, nil
+}
+
+// ListMergedGitBranches enumerates branches that have been merged into the base branch.
+func (r *Resolver) ListMergedGitBranches(baseBranch string) ([]string, error) {
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	cmd := exec.Command("git", "-C", r.RepoPath, "branch", "--merged", baseBranch, "--format=%(refname:short)")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(string(out), "\n")
+	var merged []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && trimmed != baseBranch && trimmed != "master" {
+			merged = append(merged, trimmed)
+		}
+	}
+	return merged, nil
 }
 
 var invalidPgChars = regexp.MustCompile(`[^a-zA-Z0-9_]`)

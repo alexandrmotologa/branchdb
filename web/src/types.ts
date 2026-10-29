@@ -26,6 +26,7 @@ export interface StatusResponse {
   active_branch: string;
   target_database: string;
   base_database: string;
+  namespace?: string;
   proxy_addr: string;
   upstream_addr: string;
   metrics: Metrics;
@@ -108,4 +109,48 @@ export interface QueryResponse {
   rows: Record<string, any>[];
   count: number;
   duration_ms: number;
+}
+
+export interface SnapshotInfo {
+  name: string;
+  branch_name: string;
+  database_name: string;
+  created_at: string;
+  size_bytes: number;
+  size_pretty: string;
+}
+
+export interface DryRunResult {
+  branch_name: string;
+  duration_ms: number;
+  success: boolean;
+  error?: string;
+  migration_sql: string;
+  statements_run: number;
+  tables_affected: string[];
+}
+
+export interface PruneResult {
+  pruned_branches: string[];
+  pruned_count: number;
+  dry_run: boolean;
+  bytes_reclaimed: number;
+}
+
+export interface TableSummary {
+  name: string;
+  estimated_rows: number;
+  size_bytes: number;
+  size_pretty: string;
+  column_count: number;
+  has_primary_key: boolean;
+}
+
+export interface TableDataPreview {
+  table_name: string;
+  columns: string[];
+  rows: Record<string, any>[];
+  total_rows: number;
+  limit: number;
+  offset: number;
 }
