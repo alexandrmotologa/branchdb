@@ -1,0 +1,253 @@
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+
+function buildLogoSvg() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <clipPath id="squircle-clip">
+      <rect x="24" y="24" width="976" height="976" rx="220" />
+    </clipPath>
+
+    <linearGradient id="cyan-glow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f5ff"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+
+    <linearGradient id="cyan-accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#00f5ff"/>
+    </linearGradient>
+
+    <linearGradient id="slate-plate" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#334155"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+
+    <linearGradient id="obsidian-plate" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0b0f19"/>
+    </linearGradient>
+
+    <linearGradient id="antler-gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+
+    <filter id="subtle-shadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#000000" flood-opacity="0.14" />
+    </filter>
+  </defs>
+
+  <!-- Luxury White Squircle Container -->
+  <rect x="24" y="24" width="976" height="976" rx="220" fill="#ffffff" stroke="#e2e8f0" stroke-width="6" />
+
+  <g clip-path="url(#squircle-clip)">
+    <g transform="translate(512, 512)" filter="url(#subtle-shadow)">
+
+      <!-- Hexagonal Architectural Gateway Frame -->
+      <polygon points="
+        0,-410
+        355,-205
+        355,205
+        0,410
+        -355,205
+        -355,-205
+      " fill="none" stroke="#0f172a" stroke-width="36" stroke-linejoin="round" />
+
+      <!-- Inner Dashed Cyan Hexagon Accents -->
+      <polygon points="
+        0,-375
+        324,-187
+        324,187
+        0,375
+        -324,187
+        -324,-187
+      " fill="none" stroke="#00f5ff" stroke-width="4" opacity="0.45" stroke-dasharray="16, 12" />
+
+      <!-- 100% Watertight Solid Base Silhouette (Zero-Leak Background Shield) -->
+      <path d="
+        M 0 -90
+        L -35 -105 L -75 -170 L -145 -195 L -190 -225 L -185 -245 L -140 -225 L -85 -195
+        L -135 -265 L -185 -295 L -180 -315 L -130 -290 L -165 -360 L -215 -395 L -205 -415
+        L -145 -385 L -95 -315 L -60 -210 L -45 -135
+        L -115 -135 L -180 -170 L -185 -150 L -130 -115 L -105 -100
+        L -100 -20 L -130 55 L -155 160 L -190 280 L -170 330 L -90 345 L 0 355
+        L 90 345 L 170 330 L 190 280 L 155 160 L 130 55 L 100 -20
+        L 105 -100 L 130 -115 L 185 -150 L 180 -170 L 115 -135
+        L 45 -135 L 60 -210 L 95 -315 L 145 -385 L 205 -415 L 215 -395 L 165 -360
+        L 130 -290 L 180 -315 L 185 -295 L 135 -265
+        L 85 -195 L 140 -225 L 185 -245 L 190 -225 L 145 -195 L 75 -170 L 35 -105
+        Z
+      " fill="#0b0f19" />
+
+      <!-- ANTLERS (Geometric Branching Tree Structure) -->
+      <!-- Left Antler Beams and Branch Forks -->
+      <!-- Lower Brow Tine (Branch Fork 1) -->
+      <polygon points="-75,-170 -145,-195 -185,-225 -140,-215 -85,-185" fill="#334155" />
+      <polygon points="-145,-195 -185,-225 -175,-240 -130,-210" fill="#475569" />
+      <polygon points="-185,-225 -195,-235 -175,-240" fill="#00f5ff" />
+
+      <!-- Mid Tine (Branch Fork 2) -->
+      <polygon points="-85,-185 -135,-265 -180,-295 -130,-280 -95,-220" fill="#1e293b" />
+      <polygon points="-135,-265 -180,-295 -170,-310 -125,-275" fill="#38bdf8" />
+      <polygon points="-180,-295 -190,-305 -170,-310" fill="#00f5ff" />
+
+      <!-- Upper Crown Tine (Branch Fork 3 - Main Fork) -->
+      <polygon points="-95,-220 -130,-280 -165,-360 -210,-395 -145,-375 -95,-305" fill="#334155" />
+      <polygon points="-165,-360 -210,-395 -200,-410 -140,-370" fill="#475569" />
+      <polygon points="-210,-395 -220,-405 -200,-410" fill="#00f5ff" />
+      <!-- Secondary Crown Tip -->
+      <polygon points="-140,-370 -105,-345 -95,-305 -130,-340" fill="#64748b" />
+      <!-- Antler Main Base Beam Left -->
+      <polygon points="-35,-105 -75,-170 -85,-185 -60,-210 -45,-135 0,-90" fill="#1e293b" />
+
+      <!-- Right Antler Beams and Branch Forks (Symmetrical) -->
+      <!-- Lower Brow Tine (Branch Fork 1) -->
+      <polygon points="75,-170 145,-195 185,-225 140,-215 85,-185" fill="#475569" />
+      <polygon points="145,-195 185,-225 175,-240 130,-210" fill="#64748b" />
+      <polygon points="185,-225 195,-235 175,-240" fill="#00f5ff" />
+
+      <!-- Mid Tine (Branch Fork 2) -->
+      <polygon points="85,-185 135,-265 180,-295 130,-280 95,-220" fill="#334155" />
+      <polygon points="135,-265 180,-295 170,-310 125,-275" fill="#38bdf8" />
+      <polygon points="180,-295 190,-305 170,-310" fill="#00f5ff" />
+
+      <!-- Upper Crown Tine (Branch Fork 3 - Main Fork) -->
+      <polygon points="95,-220 130,-280 165,-360 210,-395 145,-375 95,-305" fill="#475569" />
+      <polygon points="165,-360 210,-395 200,-410 140,-370" fill="#64748b" />
+      <polygon points="210,-395 220,-405 200,-410" fill="#00f5ff" />
+      <!-- Secondary Crown Tip -->
+      <polygon points="140,-370 105,-345 95,-305 130,-340" fill="#94a3b8" />
+      <!-- Antler Main Base Beam Right -->
+      <polygon points="35,-105 75,-170 85,-185 60,-210 45,-135 0,-90" fill="#334155" />
+
+      <!-- EARS (Alert, Sleek, Polygonal) -->
+      <!-- Left Ear -->
+      <polygon points="-45,-105 -105,-100 -170,-145 -125,-120" fill="#1e293b" />
+      <polygon points="-125,-120 -170,-145 -180,-135 -105,-90" fill="#0f172a" />
+      <polygon points="-105,-100 -125,-120 -105,-90" fill="#00f5ff" opacity="0.8" />
+
+      <!-- Right Ear -->
+      <polygon points="45,-105 105,-100 170,-145 125,-120" fill="#334155" />
+      <polygon points="125,-120 170,-145 180,-135 105,-90" fill="#1e293b" />
+      <polygon points="105,-100 125,-120 105,-90" fill="#00f5ff" opacity="0.8" />
+
+      <!-- FOREHEAD & CRANIAL PLATES -->
+      <polygon points="0,-90 -45,-105 -45,-55 0,-40" fill="#1e293b" />
+      <polygon points="0,-90 45,-105 45,-55 0,-40" fill="#334155" />
+      <polygon points="-45,-55 -95,-50 -65,-10 0,-15" fill="#334155" />
+      <polygon points="45,-55 95,-50 65,-10 0,-15" fill="#475569" />
+      <polygon points="0,-40 -45,-55 0,-15" fill="#1e293b" />
+      <polygon points="0,-40 45,-55 0,-15" fill="#334155" />
+
+      <!-- EYES (Geometric Canted Almonds, Electric Cyan) -->
+      <!-- Left Eye -->
+      <polygon points="-48,-15 -88,-12 -65,-2" fill="url(#cyan-glow)" />
+      <polygon points="-88,-12 -96,-8 -65,-2" fill="#0284c7" />
+      <!-- Left Eye Socket Armor -->
+      <polygon points="-48,-15 -65,-2 -55,10 -30,0" fill="#0f172a" />
+      <polygon points="-88,-12 -65,-2 -85,15 -105,5" fill="#1e293b" />
+
+      <!-- Right Eye -->
+      <polygon points="48,-15 88,-12 65,-2" fill="url(#cyan-glow)" />
+      <polygon points="88,-12 96,-8 65,-2" fill="#00f5ff" />
+      <!-- Right Eye Socket Armor -->
+      <polygon points="48,-15 65,-2 55,10 30,0" fill="#1e293b" />
+      <polygon points="88,-12 65,-2 85,15 105,5" fill="#334155" />
+
+      <!-- MUZZLE & BRIDGE (Refined Titanium Slate Facets, No Buck-Teeth Illusion) -->
+      <polygon points="0,-15 -30,0 -20,60 0,65" fill="#334155" />
+      <polygon points="0,-15 30,0 20,60 0,65" fill="#475569" />
+      <polygon points="-30,0 -55,10 -45,75 -20,60" fill="#1e293b" />
+      <polygon points="30,0 55,10 45,75 20,60" fill="#334155" />
+      <!-- Lateral Cheek Plates -->
+      <polygon points="-55,10 -105,5 -95,70 -45,75" fill="#0f172a" />
+      <polygon points="55,10 105,5 95,70 45,75" fill="#1e293b" />
+
+      <!-- NOSE & CHIN -->
+      <polygon points="0,65 -20,60 -25,90 0,95" fill="#1e293b" />
+      <polygon points="0,65 20,60 25,90 0,95" fill="#334155" />
+      <polygon points="0,95 -25,90 -15,120 0,125" fill="#0f172a" />
+      <polygon points="0,95 25,90 15,120 0,125" fill="#1e293b" />
+      <!-- Chin Apex -->
+      <polygon points="-15,120 0,125 0,135 -10,132" fill="#0b0f19" />
+      <polygon points="15,120 0,125 0,135 10,132" fill="#1e293b" />
+
+      <!-- NECK & CHEST ARMOR PLATES -->
+      <!-- Upper Throat -->
+      <polygon points="0,125 -15,120 -45,150 0,165" fill="#1e293b" />
+      <polygon points="0,125 15,120 45,150 0,165" fill="#334155" />
+      <polygon points="-45,150 -95,125 -85,185 -35,195" fill="#0f172a" />
+      <polygon points="45,150 95,125 85,185 35,195" fill="#1e293b" />
+
+      <!-- Mid Chest Armor Plates -->
+      <polygon points="0,165 -35,195 -65,245 0,260" fill="#1e293b" />
+      <polygon points="0,165 35,195 65,245 0,260" fill="#334155" />
+      <polygon points="-35,195 -85,185 -135,235 -65,245" fill="#0b0f19" />
+      <polygon points="35,195 85,185 135,235 65,245" fill="#1e293b" />
+
+      <!-- Lower Flanks & Shoulders -->
+      <polygon points="-65,245 -135,235 -170,305 -85,320 0,335" fill="#0f172a" />
+      <polygon points="65,245 135,235 170,305 85,320 0,335" fill="#1e293b" />
+      <polygon points="0,260 -65,245 0,335" fill="#1e293b" />
+      <polygon points="0,260 65,245 0,335" fill="#334155" />
+
+      <!-- CENTRAL BRANCHING CORE NODE (The Fork Junction) -->
+      <polygon points="0,205 28,225 0,245 -28,225" fill="url(#cyan-glow)" filter="url(#subtle-shadow)" />
+      <polygon points="0,212 18,225 0,238 -18,225" fill="#ffffff" opacity="0.9" />
+
+      <!-- Micro Trace Lines (Geometric Branch Vectors) -->
+      <line x1="0" y1="245" x2="0" y2="335" stroke="#00f5ff" stroke-width="2.5" opacity="0.75" />
+      <line x1="-28" y1="225" x2="-85" y2="280" stroke="#00f5ff" stroke-width="2" opacity="0.6" stroke-dasharray="4, 4" />
+      <line x1="28" y1="225" x2="85" y2="280" stroke="#00f5ff" stroke-width="2" opacity="0.6" stroke-dasharray="4, 4" />
+
+    </g>
+  </g>
+</svg>`;
+}
+
+async function run() {
+  const outputDir = path.resolve(__dirname, '../docs/images');
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  const svg = buildLogoSvg();
+  const svgPath = path.join(outputDir, 'logo.svg');
+  const pngPath = path.join(outputDir, 'logo.png');
+
+  fs.writeFileSync(svgPath, svg, 'utf-8');
+  console.log('✓ Written docs/images/logo.svg');
+
+  // Render to 1024x1024 PNG using headless Chrome
+  const chromePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+  const htmlWrapper = path.join(outputDir, 'render_logo.html');
+  fs.writeFileSync(htmlWrapper, `<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 1024px; height: 1024px; background: transparent; overflow: hidden; }
+    img { width: 1024px; height: 1024px; display: block; }
+  </style>
+</head>
+<body>
+  <img src="logo.svg" />
+</body>
+</html>`, 'utf-8');
+
+  try {
+    const cmd = `"${chromePath}" --headless --disable-gpu --force-device-scale-factor=1 --window-size=1024,1024 --screenshot="${pngPath}" "file:///${htmlWrapper.replace(/\\/g, '/')}"`;
+    execSync(cmd, { stdio: 'inherit' });
+    console.log('✓ Successfully rendered docs/images/logo.png at 1024x1024');
+  } catch (err) {
+    console.error('Failed to render PNG via Chrome:', err);
+  } finally {
+    if (fs.existsSync(htmlWrapper)) {
+      fs.unlinkSync(htmlWrapper);
+    }
+  }
+}
+
+run();

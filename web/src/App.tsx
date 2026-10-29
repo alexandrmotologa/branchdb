@@ -10,10 +10,18 @@ import { DiskUsageBar } from './components/DiskUsageBar';
 import { BranchInfo, StatusResponse } from './types';
 
 export const App: React.FC = () => {
+  const queryTab = new URLSearchParams(window.location.search).get('tab') || 'branches';
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [branches, setBranches] = useState<BranchInfo[]>([]);
-  const [activeTab, setActiveTab] = useState<string>('branches');
+  const [activeTab, setActiveTab] = useState<string>(queryTab);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+
+  const handleSelectTab = (tab: string) => {
+    setActiveTab(tab);
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', tab);
+    window.history.replaceState({}, '', url.toString());
+  };
 
   const fetchState = useCallback(async () => {
     try {
@@ -105,7 +113,7 @@ export const App: React.FC = () => {
       <Navbar
         status={status}
         activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        setActiveTab={handleSelectTab}
         onRefresh={handleRefresh}
         isRefreshing={isRefreshing}
       />

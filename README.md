@@ -1,6 +1,24 @@
-# BranchDB
+<p align="center">
+  <img src="docs/images/logo.png?raw=true" alt="BranchDB Logo" width="130" style="border-radius: 24px;" />
+</p>
 
-Zero-copy PostgreSQL database branching and Git-aware wire proxy for local development and CI sandboxes.
+<h1 align="center">BranchDB</h1>
+
+<p align="center">
+  <a href="https://github.com/alexandrmotologa/branchdb/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen.svg" alt="Build Status" /></a>
+  <a href="https://golang.org"><img src="https://img.shields.io/badge/go-1.23+-00ADD8.svg?logo=go" alt="Go Version" /></a>
+  <a href="https://www.postgresql.org"><img src="https://img.shields.io/badge/postgresql-14+-336791.svg?logo=postgresql" alt="PostgreSQL 14+" /></a>
+  <a href="https://react.dev"><img src="https://img.shields.io/badge/react-19-61DAFB.svg?logo=react" alt="React 19" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" /></a>
+</p>
+
+<p align="center">
+  Zero-copy PostgreSQL database branching and Git-aware wire proxy for local development and CI sandboxes.
+</p>
+
+<p align="center">
+  <img src="docs/images/branchdb_demo.gif?raw=true" alt="BranchDB Interactive Studio Demo" width="850" />
+</p>
 
 BranchDB creates isolated database branches from multi-gigabyte PostgreSQL databases in under 500 milliseconds. A transparent wire proxy on port 5433 watches `.git/HEAD` and directs incoming application queries to the database that matches your active Git branch.
 
@@ -177,6 +195,20 @@ branchdb exec -- npx prisma migrate dev
 ## Web Studio & REST API
 
 The embedded Web Studio provides a visual dashboard for database branching, schema exploration, and traffic analysis.
+
+### User Interface Gallery
+
+| Branch Lineage & Sandboxes | Schema Diff & Forward Migration DDL |
+| :---: | :---: |
+| ![Branch Lineage](docs/images/branchdb_studio_branches.png) | ![Schema Diff](docs/images/branchdb_schema_diff.png) |
+
+| Table Catalog & Live Data Preview | Point-in-Time Checkpoints |
+| :---: | :---: |
+| ![Table Explorer](docs/images/branchdb_schema_explorer.png) | ![Snapshots Manager](docs/images/branchdb_snapshots.png) |
+
+| Real-Time Traffic & Matrix | Mobile Responsive Layout |
+| :---: | :---: |
+| ![Traffic Matrix](docs/images/branchdb_traffic_matrix.png) | ![Mobile Responsive](docs/images/branchdb_mobile_responsive.png) |
 
 ### Features
 - **Branch Topology**: Interactive visualization of branch hierarchies, disk usage, and active client connections.
