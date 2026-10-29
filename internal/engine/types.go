@@ -8,6 +8,9 @@ type BranchInfo struct {
 	DatabaseName      string    `json:"database_name"`
 	ParentBranch      string    `json:"parent_branch"`
 	CreatedAt         time.Time `json:"created_at"`
+	LastQueriedAt     time.Time `json:"last_queried_at,omitempty"`
+	IsStale           bool      `json:"is_stale"`
+	AgeDays           int       `json:"age_days"`
 	SizeBytes         int64     `json:"size_bytes"`
 	SizePretty        string    `json:"size_pretty"`
 	ActiveConnections int       `json:"active_connections"`
@@ -93,4 +96,95 @@ type TableDataPreview struct {
 	TotalRows int64                    `json:"total_rows"`
 	Limit     int                      `json:"limit"`
 	Offset    int                      `json:"offset"`
+}
+
+// ---------------------------------------------------------------------------
+// DATA MASKING TYPES
+// ---------------------------------------------------------------------------
+
+// MaskConfig holds declarative data obfuscation rules per table and column.
+type MaskConfig struct {
+	Rules map[string]map[string]string `json:"rules" yaml:"rules"`
+}
+
+// MaskResult summarizes the outcome of executing data obfuscation.
+type MaskResult struct {
+	BranchName     string        `json:"branch_name"`
+	DatabaseName   string        `json:"database_name"`
+	DurationMs     int64         `json:"duration_ms"`
+	TablesMasked   int           `json:"tables_masked"`
+	RowsUpdated    int64         `json:"rows_updated"`
+	ExecutedSQL    []string      `json:"executed_sql"`
+	MaskedDetails  []MaskDetail  `json:"masked_details"`
+	DryRun         bool          `json:"dry_run"`
+}
+
+// MaskDetail records masking transformation applied to a specific table column.
+type MaskDetail struct {
+	Table       string `json:"table"`
+	Column      string `json:"column"`
+	Generator   string `json:"generator"`
+	RowsUpdated int64  `json:"rows_updated"`
+}
+
+// ---------------------------------------------------------------------------
+// EXPLAIN ANALYZE TYPES
+// ---------------------------------------------------------------------------
+
+// ExplainResult wraps PostgreSQL JSON execution plan analysis.
+type ExplainResult struct {
+	BranchName    string                 `json:"branch_name"`
+	DatabaseName  string                 `json:"database_name"`
+	Query         string                 `json:"query"`
+	PlanningTime  float64                `json:"planning_time_ms"`
+	ExecutionTime float64                `json:"execution_time_ms"`
+	Plan          map[string]interface{} `json:"plan"`
+	RawJSON       string                 `json:"raw_json"`
+	DurationMs    int64                  `json:"duration_ms"`
+}
+
+// ---------------------------------------------------------------------------
+// CI MATRIX TYPES
+// ---------------------------------------------------------------------------
+
+// MatrixWorker represents an isolated database worker provisioned for parallel CI jobs.
+type MatrixWorker struct {
+	WorkerID     int    `json:"worker_id"`
+	DatabaseName string `json:"database_name"`
+	DSN          string `json:"dsn"`
+	Port         int    `json:"port"`
+	Host         string `json:"host"`
+	DurationMs   int64  `json:"duration_ms"`
+}
+
+// MatrixResult summarizes a parallel database matrix provisioning or cleanup.
+type MatrixResult struct {
+	BaseDatabase string         `json:"base_database"`
+	Workers      []MatrixWorker `json:"workers"`
+	WorkerCount  int            `json:"worker_count"`
+	TotalDuration int64         `json:"total_duration_ms"`
+	EnvFile      string         `json:"env_file,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// SNAPSHOT EXPORT / IMPORT TYPES
+// ---------------------------------------------------------------------------
+
+// SnapshotExportResult details an exported snapshot archive.
+type SnapshotExportResult struct {
+	SnapshotName string `json:"snapshot_name"`
+	BranchName   string `json:"branch_name"`
+	DatabaseName string `json:"database_name"`
+	FilePath     string `json:"file_path"`
+	SizeBytes    int64  `json:"size_bytes"`
+	DurationMs   int64  `json:"duration_ms"`
+}
+
+// SnapshotImportResult details an imported snapshot or branch.
+type SnapshotImportResult struct {
+	TargetBranch   string `json:"target_branch"`
+	DatabaseName   string `json:"database_name"`
+	SourceFile     string `json:"source_file"`
+	DurationMs     int64  `json:"duration_ms"`
+	SizeBytes      int64  `json:"size_bytes"`
 }

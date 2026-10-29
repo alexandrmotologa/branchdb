@@ -1,23 +1,36 @@
-import React, { useState } from 'react';
-import { Terminal, Play, Clock, AlertCircle } from 'lucide-react';
-import { BranchInfo, QueryResponse } from '../types';
+import React, { useState, useEffect } from 'react';
+import { Terminal, Play, Clock, AlertCircle, Cpu, Eye, Code, ChevronRight, Layers } from 'lucide-react';
+import { BranchInfo, QueryResponse, ExplainResult, ExplainPlanNode } from '../types';
 
 interface SqlSandboxProps {
   branches: BranchInfo[];
   activeBranch: string;
+  initialQuery?: string;
+  initialBranch?: string;
 }
 
 export const SqlSandbox: React.FC<SqlSandboxProps> = ({
   branches,
   activeBranch,
+  initialQuery,
+  initialBranch,
 }) => {
-  const [selectedBranch, setSelectedBranch] = useState<string>(activeBranch || 'main');
+  const [selectedBranch, setSelectedBranch] = useState<string>(initialBranch || activeBranch || 'main');
   const [query, setQuery] = useState<string>(
-    'SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = \'public\' ORDER BY table_name;'
+    initialQuery || 'SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = \'public\' ORDER BY table_name;'
   );
   const [result, setResult] = useState<QueryResponse | null>(null);
+  const [explainResult, setExplainResult] = useState<ExplainResult | null>(null);
+  const [activeView, setActiveView] = useState<'rows' | 'explain'>('rows');
+  const [showRawJson, setShowRawJson] = useState<boolean>(false);
   const [isRunning, setIsRunning] = useState<boolean>(false);
+  const [isExplaining, setIsExplaining] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (initialQuery) setQuery(initialQuery);
+    if (initialBranch) setSelectedBranch(initialBranch);
+  }, [initialQuery, initialBranch]);
 
   const execute = async () => {
     if (!query.trim()) return;
@@ -35,6 +48,7 @@ export const SqlSandbox: React.FC<SqlSandboxProps> = ({
         throw new Error(data.error || 'Query failed');
       }
       setResult(data);
+      setActiveView('rows');
     } catch (err: any) {
       setErrorMsg(err.message || 'Execution error');
       setResult(null);
@@ -43,10 +57,104 @@ export const SqlSandbox: React.FC<SqlSandboxProps> = ({
     }
   };
 
+  const explainPlan = async (analyze: boolean = true) => {
+    if (!query.trim()) return;
+    try {
+      setIsExplaining(true);
+      setErrorMsg(null);
+      const res = await fetch('/api/query/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          branch: selectedBranch,
+          query: query.trim(),
+          analyze: analyze,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Explain query failed');
+      }
+      setExplainResult(data);
+      setActiveView('explain');
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Explain plan error');
+    } finally {
+      setIsExplaining(false);
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       execute();
     }
+  };
+
+  const renderPlanNode = (node: ExplainPlanNode, depth: number = 0) => {
+    const nodeType = node['Node Type'] || 'Operation';
+    const isScan = nodeType.includes('Scan');
+    const isJoin = nodeType.includes('Join');
+    const isAgg = nodeType.includes('Aggregate');
+
+    let badgeColor = 'bg-slate-800 text-slate-300 border-slate-700';
+    if (isScan) badgeColor = 'bg-blue-500/10 text-blue-400 border-blue-500/30';
+    if (isJoin) badgeColor = 'bg-purple-500/10 text-purple-400 border-purple-500/30';
+    if (isAgg) badgeColor = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30';
+
+    return (
+      <div key={`${depth}-${nodeType}-${node['Relation Name'] || ''}`} className="space-y-2">
+        <div 
+          className="p-3 rounded-lg bg-slate-900/60 border border-slate-800 hover:border-slate-700 transition-colors"
+          style={{ marginLeft: `${depth * 20}px` }}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
+              <span className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold border ${badgeColor}`}>
+                {nodeType}
+              </span>
+              {node['Relation Name'] && (
+                <span className="text-xs font-mono text-emerald-400 font-medium">
+                  on {node['Relation Name']}
+                  {node['Alias'] && node['Alias'] !== node['Relation Name'] && (
+                    <span className="text-slate-500 ml-1">({node['Alias']})</span>
+                  )}
+                </span>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3 text-[11px] font-mono text-slate-400">
+              {node['Actual Total Time'] !== undefined && (
+                <span className="text-amber-400 font-medium">
+                  {node['Actual Total Time'].toFixed(2)}ms
+                </span>
+              )}
+              {node['Actual Rows'] !== undefined && (
+                <span>
+                  rows: <strong className="text-slate-200">{node['Actual Rows']}</strong>
+                  {node['Actual Loops'] && node['Actual Loops'] > 1 && ` (loops: ${node['Actual Loops']})`}
+                </span>
+              )}
+              {node['Total Cost'] !== undefined && (
+                <span className="text-slate-500">
+                  cost: {node['Startup Cost']?.toFixed(1)}..{node['Total Cost']?.toFixed(1)}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {(node['Filter'] || node['Index Cond']) && (
+            <div className="mt-2 text-[11px] font-mono text-slate-400 bg-slate-950 p-2 rounded border border-slate-800/80">
+              {node['Index Cond'] && <div><span className="text-purple-400 font-semibold">Index:</span> {node['Index Cond']}</div>}
+              {node['Filter'] && <div><span className="text-amber-400 font-semibold">Filter:</span> {node['Filter']}</div>}
+            </div>
+          )}
+        </div>
+
+        {node.Plans && node.Plans.map((childPlan) => renderPlanNode(childPlan, depth + 1))}
+      </div>
+    );
   };
 
   return (
@@ -86,6 +194,17 @@ export const SqlSandbox: React.FC<SqlSandboxProps> = ({
           />
           <div className="absolute right-3 bottom-3 flex items-center gap-2">
             <span className="text-[10px] font-mono text-slate-500 hidden sm:inline">Ctrl+Enter</span>
+            
+            <button
+              onClick={() => explainPlan(true)}
+              disabled={isExplaining || !query.trim()}
+              className="flex items-center gap-1.5 px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-xs font-medium text-slate-300 border border-slate-700 transition-colors"
+              title="Compute execution plan with EXPLAIN (ANALYZE, BUFFERS)"
+            >
+              <Cpu className="w-3 h-3 text-cyan-400" />
+              Explain Plan
+            </button>
+
             <button
               onClick={execute}
               disabled={isRunning || !query.trim()}
@@ -105,7 +224,53 @@ export const SqlSandbox: React.FC<SqlSandboxProps> = ({
         </div>
       )}
 
-      {result && (
+      {/* Tabs for Results vs Explain Plan */}
+      {(result || explainResult) && (
+        <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+          <div className="flex items-center gap-2">
+            {result && (
+              <button
+                onClick={() => setActiveView('rows')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                  activeView === 'rows'
+                    ? 'bg-slate-800 text-emerald-400 border border-slate-700'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                Query Results ({result.count})
+              </button>
+            )}
+
+            {explainResult && (
+              <button
+                onClick={() => setActiveView('explain')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                  activeView === 'explain'
+                    ? 'bg-slate-800 text-cyan-400 border border-slate-700'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Cpu className="w-3.5 h-3.5" />
+                Execution Plan (EXPLAIN)
+              </button>
+            )}
+          </div>
+
+          {activeView === 'explain' && explainResult && (
+            <button
+              onClick={() => setShowRawJson(!showRawJson)}
+              className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200 px-2 py-1 rounded bg-slate-900 border border-slate-800"
+            >
+              <Code className="w-3 h-3" />
+              {showRawJson ? 'View Tree' : 'View Raw JSON'}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Execution Results View */}
+      {activeView === 'rows' && result && (
         <div className="p-4 rounded-xl bg-slate-900/30 border border-slate-800 space-y-3">
           <div className="flex items-center justify-between text-xs font-mono text-slate-400">
             <div>
@@ -149,6 +314,43 @@ export const SqlSandbox: React.FC<SqlSandboxProps> = ({
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Visual Execution Plan (EXPLAIN ANALYZE) View */}
+      {activeView === 'explain' && explainResult && (
+        <div className="p-4 rounded-xl bg-slate-900/30 border border-slate-800 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono">
+            <div className="flex items-center gap-4">
+              <div>
+                <span className="text-slate-500">Planning:</span>{' '}
+                <strong className="text-white">{explainResult.planning_time_ms.toFixed(2)}ms</strong>
+              </div>
+              <div>
+                <span className="text-slate-500">Execution:</span>{' '}
+                <strong className="text-emerald-400">{explainResult.execution_time_ms.toFixed(2)}ms</strong>
+              </div>
+            </div>
+            <div className="text-slate-500">
+              Database: <code className="text-slate-300">{explainResult.database_name}</code>
+            </div>
+          </div>
+
+          {showRawJson ? (
+            <div className="bg-[#0A0E17] border border-slate-800 p-4 rounded-lg font-mono text-xs text-slate-300 overflow-x-auto max-h-96 whitespace-pre">
+              {JSON.stringify(explainResult.plan, null, 2)}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {explainResult.plan?.Plan ? (
+                renderPlanNode(explainResult.plan.Plan)
+              ) : (
+                <div className="text-center py-6 text-slate-500 text-xs italic">
+                  No visual tree nodes parsed. View raw JSON output.
+                </div>
+              )}
             </div>
           )}
         </div>

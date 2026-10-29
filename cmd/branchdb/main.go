@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -15,6 +16,7 @@ import (
 	"github.com/alexandrmotologa/branchdb/internal/config"
 	"github.com/alexandrmotologa/branchdb/internal/engine"
 	"github.com/alexandrmotologa/branchdb/internal/git"
+	"github.com/alexandrmotologa/branchdb/internal/masking"
 	"github.com/alexandrmotologa/branchdb/internal/proxy"
 	"github.com/alexandrmotologa/branchdb/internal/schema"
 	"github.com/alexandrmotologa/branchdb/internal/server"
@@ -22,7 +24,7 @@ import (
 )
 
 var (
-	Version   = "1.1.0"
+	Version   = "1.2.0"
 	BuildDate = time.Now().Format("2006-01-02")
 	cfg       = config.DefaultConfig()
 )
@@ -67,6 +69,8 @@ Its transparent proxy dynamically routes client connections based on the active 
 	rootCmd.AddCommand(seedCmd())
 	rootCmd.AddCommand(pruneCmd())
 	rootCmd.AddCommand(execCmd())
+	rootCmd.AddCommand(maskCmd())
+	rootCmd.AddCommand(ciCmd())
 	rootCmd.AddCommand(versionCmd())
 
 	if err := rootCmd.Execute(); err != nil {
@@ -115,7 +119,7 @@ func runProxy(parentCtx context.Context) error {
 	}()
 
 	if cfg.EnableStudio {
-		srv := server.NewServer(cfg, eng, watcher, metrics, router)
+		srv := server.NewServer(cfg, eng, watcher, metrics, router, wireProxy.QueryLog())
 		go func() {
 			if err := srv.Start(ctx); err != nil {
 				log.Printf("[web-studio] Server exited: %v", err)
@@ -286,11 +290,18 @@ func listCmd() *cobra.Command {
 }
 
 func diffCmd() *cobra.Command {
-	return &cobra.Command{
+	var threeWay bool
+	var baseFlag string
+	var theirsFlag string
+
+	cmd := &cobra.Command{
 		Use:   "diff [from] [to]",
 		Short: "Compute schema differences between two branches and print migration DDL",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			baseDb := cfg.EffectiveBaseDatabase()
+			if baseFlag != "" {
+				baseDb = baseFlag
+			}
 			prefix := cfg.EffectivePrefix()
 			fromDb := baseDb
 			toDb := ""
@@ -313,6 +324,71 @@ func diffCmd() *cobra.Command {
 			}
 
 			inspector := schema.NewInspector(cfg)
+
+			if threeWay || theirsFlag != "" {
+				theirsDb := theirsFlag
+				if theirsDb == "" && len(args) >= 3 {
+					theirsDb = args[2]
+				}
+				if theirsDb == "" {
+					return fmt.Errorf("--theirs <branch_or_db> required for 3-way schema conflict check")
+				}
+				if !strings.HasPrefix(theirsDb, prefix) && theirsDb != baseDb {
+					theirsDb = git.SanitizeBranchToDatabaseName(theirsDb, prefix)
+				}
+
+				baseSchema, err := inspector.InspectDatabase(cmd.Context(), baseDb)
+				if err != nil {
+					return fmt.Errorf("inspecting base %s failed: %w", baseDb, err)
+				}
+				mineSchema, err := inspector.InspectDatabase(cmd.Context(), toDb)
+				if err != nil {
+					return fmt.Errorf("inspecting mine %s failed: %w", toDb, err)
+				}
+				theirsSchema, err := inspector.InspectDatabase(cmd.Context(), theirsDb)
+				if err != nil {
+					return fmt.Errorf("inspecting theirs %s failed: %w", theirsDb, err)
+				}
+
+				res := schema.CompareThreeWay(baseDb, toDb, theirsDb, baseSchema, mineSchema, theirsSchema)
+				fmt.Printf("3-Way Schema Merge Analysis:\n")
+				fmt.Printf("  Base   : %s\n", baseDb)
+				fmt.Printf("  Mine   : %s\n", toDb)
+				fmt.Printf("  Theirs : %s\n", theirsDb)
+				fmt.Println()
+
+				if res.HasConflicts {
+					fmt.Printf("WARNING: %d Schema Merge Conflicts Detected:\n", len(res.Conflicts))
+					for i, c := range res.Conflicts {
+						fmt.Printf("  %d. [%s] Table: %s", i+1, c.ConflictType, c.Table)
+						if c.Column != "" {
+							fmt.Printf(" (Column: %s)", c.Column)
+						}
+						fmt.Println()
+						fmt.Printf("     Mine   : %s\n", c.MineSummary)
+						fmt.Printf("     Theirs : %s\n", c.TheirsSummary)
+						fmt.Printf("     Action : %s\n", c.Recommendation)
+					}
+					fmt.Println()
+				} else {
+					fmt.Println("SUCCESS: Clean 3-way merge. No structural collisions detected.")
+				}
+
+				if len(res.SafeMineChanges) > 0 {
+					fmt.Printf("Safe Changes from Mine (%d):\n", len(res.SafeMineChanges))
+					for _, ch := range res.SafeMineChanges {
+						fmt.Printf("  + %s\n", ch)
+					}
+				}
+				if len(res.SafeTheirChanges) > 0 {
+					fmt.Printf("Safe Changes from Theirs (%d):\n", len(res.SafeTheirChanges))
+					for _, ch := range res.SafeTheirChanges {
+						fmt.Printf("  + %s\n", ch)
+					}
+				}
+				return nil
+			}
+
 			fromSchema, err := inspector.InspectDatabase(cmd.Context(), fromDb)
 			if err != nil {
 				return fmt.Errorf("inspecting source %s failed: %w", fromDb, err)
@@ -344,6 +420,12 @@ func diffCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&threeWay, "3way", false, "Perform 3-way schema conflict analysis")
+	cmd.Flags().StringVar(&baseFlag, "base-db", "", "Common base ancestor database for 3-way diff")
+	cmd.Flags().StringVar(&theirsFlag, "theirs", "", "Remote branch or database to merge against")
+
+	return cmd
 }
 
 func dropCmd() *cobra.Command {
@@ -519,7 +601,78 @@ func snapshotCmd() *cobra.Command {
 		},
 	}
 
-	snapCmd.AddCommand(createCmd, restoreCmd, listSnapsCmd, dropSnapCmd)
+	var outPath string
+	exportCmd := &cobra.Command{
+		Use:   "export <snapshot-name> [branch]",
+		Short: "Export a snapshot to a compressed standalone archive file",
+		Args:  cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			snapName := args[0]
+			branch := cfg.BranchOverride
+			if len(args) > 1 {
+				branch = args[1]
+			}
+			if branch == "" {
+				resolver := git.NewResolver(cfg.RepoPath)
+				active, _ := resolver.GetActiveBranch()
+				branch = active
+			}
+			meta, err := engine.NewMetadataStore(cfg.DataDir)
+			if err != nil {
+				return err
+			}
+			eng := engine.NewEngine(cfg, meta)
+			defer eng.Close()
+
+			res, err := eng.ExportSnapshot(cmd.Context(), branch, snapName, outPath)
+			if err != nil {
+				return fmt.Errorf("export snapshot failed: %w", err)
+			}
+			fmt.Printf("Exported snapshot '%s' to %s (%s in %dms)\n",
+				snapName, res.FilePath, engine.FormatSizePretty(res.SizeBytes), res.DurationMs)
+			return nil
+		},
+	}
+	exportCmd.Flags().StringVarP(&outPath, "out", "o", "", "Target output archive file path")
+
+	var asBranch string
+	importCmd := &cobra.Command{
+		Use:   "import <archive-file>",
+		Short: "Import a snapshot archive into a branch database",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			archiveFile := args[0]
+			branch := asBranch
+			if branch == "" {
+				branch = cfg.BranchOverride
+			}
+			if branch == "" {
+				resolver := git.NewResolver(cfg.RepoPath)
+				active, _ := resolver.GetActiveBranch()
+				branch = active
+			}
+			if branch == "" {
+				return fmt.Errorf("target branch name required (use --as <branch>)")
+			}
+			meta, err := engine.NewMetadataStore(cfg.DataDir)
+			if err != nil {
+				return err
+			}
+			eng := engine.NewEngine(cfg, meta)
+			defer eng.Close()
+
+			res, err := eng.ImportSnapshot(cmd.Context(), archiveFile, branch)
+			if err != nil {
+				return fmt.Errorf("import snapshot failed: %w", err)
+			}
+			fmt.Printf("Imported snapshot archive into branch '%s' (%s in %dms)\n",
+				res.TargetBranch, res.DatabaseName, res.DurationMs)
+			return nil
+		},
+	}
+	importCmd.Flags().StringVar(&asBranch, "as", "", "Branch name to assign to the imported database")
+
+	snapCmd.AddCommand(createCmd, restoreCmd, listSnapsCmd, dropSnapCmd, exportCmd, importCmd)
 	return snapCmd
 }
 
@@ -643,18 +796,38 @@ func pruneCmd() *cobra.Command {
 	var mergedOnly bool
 	var dryRun bool
 	var force bool
+	var ttlFlag string
 
 	cmd := &cobra.Command{
 		Use:   "prune",
-		Short: "Clean up orphan branch databases whose Git branches are merged or deleted",
+		Short: "Clean up orphan branch databases whose Git branches are merged, deleted, or inactive beyond TTL",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolver := git.NewResolver(cfg.RepoPath)
 			var activeGitBranches []string
 			var err error
 
+			var ttl time.Duration
+			if ttlFlag != "" {
+				ttlStr := strings.TrimSpace(ttlFlag)
+				if strings.HasSuffix(ttlStr, "d") {
+					daysStr := strings.TrimSuffix(ttlStr, "d")
+					days, err := strconv.Atoi(daysStr)
+					if err != nil {
+						return fmt.Errorf("invalid ttl format: %s", ttlFlag)
+					}
+					ttl = time.Duration(days) * 24 * time.Hour
+				} else {
+					d, err := time.ParseDuration(ttlStr)
+					if err != nil {
+						return fmt.Errorf("invalid ttl duration: %w", err)
+					}
+					ttl = d
+				}
+			}
+
 			if mergedOnly {
 				activeGitBranches, err = resolver.ListMergedGitBranches("main")
-			} else {
+			} else if ttl == 0 {
 				activeGitBranches, err = resolver.ListAllGitBranches()
 			}
 
@@ -679,15 +852,15 @@ func pruneCmd() *cobra.Command {
 				}
 			}
 
-			res, err := eng.PruneBranches(cmd.Context(), activeGitBranches, dryRun)
+			res, err := eng.PruneBranches(cmd.Context(), activeGitBranches, ttl, dryRun)
 			if err != nil {
 				return err
 			}
 
 			if res.DryRun {
-				fmt.Printf("[Dry-Run] %d orphan branches identified for cleanup:\n", res.PrunedCount)
+				fmt.Printf("[Dry-Run] %d orphan/inactive branches identified for cleanup:\n", res.PrunedCount)
 			} else {
-				fmt.Printf("Successfully pruned %d orphan branch databases:\n", res.PrunedCount)
+				fmt.Printf("Successfully pruned %d orphan/inactive branch databases:\n", res.PrunedCount)
 			}
 
 			for _, b := range res.PrunedBranches {
@@ -701,7 +874,159 @@ func pruneCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&mergedOnly, "merged", false, "Only prune branches that have been merged into main")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "List orphan branches without deleting them")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip confirmation prompt")
+	cmd.Flags().StringVar(&ttlFlag, "ttl", "", "Prune branches inactive longer than duration (e.g. 7d, 48h, 30m)")
 	return cmd
+}
+
+// -------------------------------------------------------------
+// MASK SUBCOMMAND
+// -------------------------------------------------------------
+
+func maskCmd() *cobra.Command {
+	var configPath string
+	var dryRun bool
+
+	cmd := &cobra.Command{
+		Use:   "mask [branch-name]",
+		Short: "Anonymize sensitive PII data in a branch database using declarative rules",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			branch := cfg.BranchOverride
+			if len(args) > 0 {
+				branch = args[0]
+			}
+			if branch == "" {
+				resolver := git.NewResolver(cfg.RepoPath)
+				active, _ := resolver.GetActiveBranch()
+				branch = active
+			}
+			if branch == "main" || branch == "master" {
+				return fmt.Errorf("safety protection: cannot mask production base branch '%s'", branch)
+			}
+
+			prefix := cfg.EffectivePrefix()
+			targetDb := git.SanitizeBranchToDatabaseName(branch, prefix)
+
+			cfgFile := configPath
+			if cfgFile == "" {
+				cfgFile = masking.FindMaskConfigFile(cfg.RepoPath)
+			}
+			if cfgFile == "" {
+				return fmt.Errorf("no masking configuration found; create .branchdb/mask.yaml or pass --config")
+			}
+
+			maskCfg, err := masking.LoadConfig(cfgFile)
+			if err != nil {
+				return fmt.Errorf("loading mask config: %w", err)
+			}
+
+			masker := masking.NewMasker()
+			dsn := cfg.UpstreamDSN(targetDb)
+			fmt.Printf("Applying PII data masking to branch '%s' (%s)...\n", branch, targetDb)
+			res, err := masker.MaskDatabase(cmd.Context(), dsn, branch, targetDb, *maskCfg, dryRun)
+			if err != nil {
+				return fmt.Errorf("masking failed: %w", err)
+			}
+
+			if res.DryRun {
+				fmt.Printf("[Dry-Run] Masking simulation completed in %dms (%d rows across %d tables):\n",
+					res.DurationMs, res.RowsUpdated, res.TablesMasked)
+			} else {
+				fmt.Printf("Masking completed in %dms (%d rows anonymized across %d tables):\n",
+					res.DurationMs, res.RowsUpdated, res.TablesMasked)
+			}
+			for _, d := range res.MaskedDetails {
+				fmt.Printf("  - %s.%s (%s: %d rows)\n", d.Table, d.Column, d.Generator, d.RowsUpdated)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to masking YAML configuration file")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview masking rules and affected rows without mutating data")
+	return cmd
+}
+
+// -------------------------------------------------------------
+// CI MATRIX SUBCOMMAND
+// -------------------------------------------------------------
+
+func ciCmd() *cobra.Command {
+	ciRoot := &cobra.Command{
+		Use:   "ci",
+		Short: "Continuous Integration helpers for parallel test database isolation",
+	}
+
+	var workers int
+	var baseDb string
+	var envFile string
+
+	matrixCmd := &cobra.Command{
+		Use:   "matrix",
+		Short: "Provision isolated template database clones for parallel test runners (e.g. Jest, Pytest)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if baseDb == "" {
+				baseDb = cfg.EffectiveBaseDatabase()
+			}
+			meta, err := engine.NewMetadataStore(cfg.DataDir)
+			if err != nil {
+				return err
+			}
+			eng := engine.NewEngine(cfg, meta)
+			defer eng.Close()
+
+			fmt.Printf("Provisioning %d isolated CI worker databases from '%s'...\n", workers, baseDb)
+			res, err := eng.ProvisionMatrix(cmd.Context(), baseDb, workers)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("Successfully provisioned %d CI worker databases in %dms:\n\n", res.WorkerCount, res.TotalDuration)
+			var envLines []string
+			for _, w := range res.Workers {
+				fmt.Printf("  Worker %d: %s (%dms)\n", w.WorkerID, w.DatabaseName, w.DurationMs)
+				envLines = append(envLines, fmt.Sprintf("DATABASE_URL_WORKER_%d=%s", w.WorkerID, w.DSN))
+			}
+
+			if envFile != "" {
+				if err := os.WriteFile(envFile, []byte(strings.Join(envLines, "\n")+"\n"), 0644); err != nil {
+					return fmt.Errorf("writing env file failed: %w", err)
+				}
+				fmt.Printf("\nExported matrix worker DSNs to %s\n", envFile)
+			}
+			return nil
+		},
+	}
+	matrixCmd.Flags().IntVarP(&workers, "workers", "w", 4, "Number of parallel worker databases to provision")
+	matrixCmd.Flags().StringVar(&baseDb, "base", "", "Base template database name (defaults to configured base)")
+	matrixCmd.Flags().StringVar(&envFile, "env-file", "", "Write generated worker connection strings to specified .env file")
+
+	cleanupCmd := &cobra.Command{
+		Use:   "cleanup",
+		Short: "Tear down isolated parallel CI worker databases",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if baseDb == "" {
+				baseDb = cfg.EffectiveBaseDatabase()
+			}
+			meta, err := engine.NewMetadataStore(cfg.DataDir)
+			if err != nil {
+				return err
+			}
+			eng := engine.NewEngine(cfg, meta)
+			defer eng.Close()
+
+			fmt.Printf("Tearing down %d CI worker databases for '%s'...\n", workers, baseDb)
+			if err := eng.TeardownMatrix(cmd.Context(), baseDb, workers); err != nil {
+				return err
+			}
+			fmt.Println("All CI matrix worker databases cleaned up.")
+			return nil
+		},
+	}
+	cleanupCmd.Flags().IntVarP(&workers, "workers", "w", 4, "Number of worker databases to tear down")
+	cleanupCmd.Flags().StringVar(&baseDb, "base", "", "Base template database name")
+
+	ciRoot.AddCommand(matrixCmd, cleanupCmd)
+	return ciRoot
 }
 
 // -------------------------------------------------------------

@@ -1,5 +1,5 @@
 import React from 'react';
-import { GitBranch, Database, Activity, RefreshCw, Terminal, Layers, Camera, Table as TableIcon } from 'lucide-react';
+import { GitBranch, Database, Activity, RefreshCw, Terminal, Layers, Camera, Table as TableIcon, Radio } from 'lucide-react';
 import { StatusResponse } from '../types';
 
 interface NavbarProps {
@@ -22,6 +22,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'snapshots', label: 'Snapshots', icon: Camera },
     { id: 'diff', label: 'Schema Diff & DDL', icon: Layers },
     { id: 'explorer', label: 'Table Explorer', icon: TableIcon },
+    { id: 'queries', label: 'Live Queries', icon: Radio },
     { id: 'metrics', label: 'Traffic & Matrix', icon: Activity },
     { id: 'console', label: 'SQL Sandbox', icon: Terminal },
   ];
@@ -38,7 +39,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-white tracking-tight">BranchDB</span>
                 <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">
-                  v1.1.0
+                  v1.2.0
                 </span>
                 {status?.namespace && (
                   <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">

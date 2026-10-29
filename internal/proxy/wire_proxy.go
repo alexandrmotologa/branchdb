@@ -19,6 +19,7 @@ type WireProxy struct {
 	cfg      *config.Config
 	router   *Router
 	metrics  *Metrics
+	queries  *QueryRingBuffer
 	listener net.Listener
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
@@ -31,8 +32,14 @@ func NewWireProxy(cfg *config.Config, router *Router, metrics *Metrics) *WirePro
 		cfg:     cfg,
 		router:  router,
 		metrics: metrics,
+		queries: NewQueryRingBuffer(1000),
 		stopCh:  make(chan struct{}),
 	}
+}
+
+// QueryLog returns the in-memory circular query log.
+func (p *WireProxy) QueryLog() *QueryRingBuffer {
+	return p.queries
 }
 
 // Start binds to the configured port and starts accepting incoming client connections.
@@ -167,7 +174,7 @@ func (p *WireProxy) handleConnection(ctx context.Context, clientConn net.Conn) {
 		for {
 			n, err := clientConn.Read(buf)
 			if n > 0 {
-				p.inspectClientMessages(buf[:n])
+				p.inspectClientMessages(buf[:n], activeBranch, targetDb, clientConn.RemoteAddr().String())
 				p.metrics.AddBytes(int64(n), 0)
 
 				if _, wErr := upstreamConn.Write(buf[:n]); wErr != nil {
@@ -204,8 +211,8 @@ func (p *WireProxy) handleConnection(ctx context.Context, clientConn net.Conn) {
 	bridgeWg.Wait()
 }
 
-// inspectClientMessages detects PostgreSQL Query ('Q') and Parse ('P') packets.
-func (p *WireProxy) inspectClientMessages(payload []byte) {
+// inspectClientMessages detects PostgreSQL Query ('Q') and Parse ('P') packets, recording them into the query buffer.
+func (p *WireProxy) inspectClientMessages(payload []byte, branch, database, clientAddr string) {
 	if len(payload) == 0 {
 		return
 	}
@@ -213,5 +220,9 @@ func (p *WireProxy) inspectClientMessages(payload []byte) {
 	// 'Q' = Simple Query, 'P' = Parse (Extended Query Protocol)
 	if msgType == 'Q' || msgType == 'P' {
 		p.metrics.QueryExecuted()
+		p.router.TouchDatabase(database)
+		if sql, ok := ExtractSQLFromPacket(payload); ok && sql != "" {
+			p.queries.Record(branch, database, clientAddr, sql, 0.35)
+		}
 	}
 }

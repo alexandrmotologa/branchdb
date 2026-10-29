@@ -1,5 +1,19 @@
 import React, { useState } from 'react';
-import { GitBranch, Database, RotateCcw, Trash2, ArrowRight, Plus, CheckCircle2, Clock, HardDrive, Sparkles, Scissors } from 'lucide-react';
+import { 
+  GitBranch, 
+  Database, 
+  RotateCcw, 
+  Trash2, 
+  ArrowRight, 
+  Plus, 
+  CheckCircle2, 
+  Clock, 
+  HardDrive, 
+  Scissors,
+  AlertTriangle,
+  History,
+  Activity
+} from 'lucide-react';
 import { BranchInfo } from '../types';
 
 interface BranchTreeProps {
@@ -8,7 +22,7 @@ interface BranchTreeProps {
   onCheckout: (name: string) => Promise<void>;
   onReset: (name: string) => Promise<void>;
   onDrop: (name: string) => Promise<void>;
-  onPrune: () => Promise<void>;
+  onPrune: (ttlHours?: number) => Promise<void>;
 }
 
 export const BranchTree: React.FC<BranchTreeProps> = ({
@@ -23,6 +37,7 @@ export const BranchTree: React.FC<BranchTreeProps> = ({
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [showPruneDropdown, setShowPruneDropdown] = useState<boolean>(false);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,16 +89,18 @@ export const BranchTree: React.FC<BranchTreeProps> = ({
     }
   };
 
-  const handlePruneClick = async () => {
-    if (!confirm("Prune all database branches that have been merged or deleted from Git?")) {
+  const handlePruneClick = async (ttlHours?: number) => {
+    setShowPruneDropdown(false);
+    const desc = ttlHours ? `inactive longer than ${ttlHours}h` : 'merged or deleted in Git';
+    if (!confirm(`Prune all database branches that are ${desc}?`)) {
       return;
     }
     try {
       setLoadingAction('prune');
       setErrorMsg(null);
       setSuccessMsg(null);
-      await onPrune();
-      setSuccessMsg('Orphan branches pruned successfully.');
+      await onPrune(ttlHours);
+      setSuccessMsg('Orphan/inactive branches pruned successfully.');
     } catch (err: any) {
       setErrorMsg(err.message || 'Pruning failed');
     } finally {
@@ -109,15 +126,41 @@ export const BranchTree: React.FC<BranchTreeProps> = ({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={handlePruneClick}
-            disabled={loadingAction === 'prune'}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 border border-slate-700 transition-colors"
-            title="Clean up branches whose Git branches have been merged or deleted"
-          >
-            <Scissors className={`w-3.5 h-3.5 ${loadingAction === 'prune' ? 'animate-spin' : ''}`} />
-            Prune Merged
-          </button>
+          {/* Prune Menu */}
+          <div className="relative">
+            <button
+              onClick={() => setShowPruneDropdown(!showPruneDropdown)}
+              disabled={loadingAction === 'prune'}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 border border-slate-700 transition-colors"
+              title="Clean up orphan or stale branches"
+            >
+              <Scissors className={`w-3.5 h-3.5 ${loadingAction === 'prune' ? 'animate-spin' : ''}`} />
+              Prune...
+            </button>
+
+            {showPruneDropdown && (
+              <div className="absolute right-0 mt-1 w-52 bg-[#0E131F] border border-slate-800 rounded-xl shadow-xl z-20 py-1 text-xs">
+                <button
+                  onClick={() => handlePruneClick()}
+                  className="w-full text-left px-3 py-2 text-slate-300 hover:bg-slate-800/60 transition-colors"
+                >
+                  Prune Merged (Git)
+                </button>
+                <button
+                  onClick={() => handlePruneClick(24)}
+                  className="w-full text-left px-3 py-2 text-slate-300 hover:bg-slate-800/60 transition-colors"
+                >
+                  Prune Inactive &gt; 24 Hours
+                </button>
+                <button
+                  onClick={() => handlePruneClick(168)}
+                  className="w-full text-left px-3 py-2 text-slate-300 hover:bg-slate-800/60 transition-colors"
+                >
+                  Prune Stale &gt; 7 Days
+                </button>
+              </div>
+            )}
+          </div>
 
           <form onSubmit={handleCreate} className="flex items-center gap-2">
             <input
@@ -224,7 +267,7 @@ export const BranchTree: React.FC<BranchTreeProps> = ({
                         <GitBranch className="w-4 h-4" />
                       </div>
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className={`font-mono text-sm font-semibold ${isActive ? 'text-emerald-300' : 'text-slate-200'}`}>
                             {branch.name}
                           </span>
@@ -234,17 +277,33 @@ export const BranchTree: React.FC<BranchTreeProps> = ({
                               Active Head
                             </span>
                           )}
+                          {branch.is_stale && (
+                            <span className="flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                              <AlertTriangle className="w-3 h-3" />
+                              Stale ({branch.age_days}d inactive)
+                            </span>
+                          )}
                           <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">
                             parent: {branch.parent_branch || 'main'}
                           </span>
                         </div>
-                        <div className="flex items-center gap-3 text-xs text-slate-400 font-mono mt-1">
+
+                        <div className="flex items-center gap-3 text-xs text-slate-400 font-mono mt-1 flex-wrap">
                           <span>db: <span className="text-slate-300">{branch.database_name}</span></span>
                           <span className="text-slate-600">•</span>
                           <span className="flex items-center gap-1 text-[11px] text-slate-500">
                             <Clock className="w-3 h-3" />
-                            {new Date(branch.created_at).toLocaleTimeString()}
+                            Created {new Date(branch.created_at).toLocaleDateString()}
                           </span>
+                          {branch.last_queried_at && (
+                            <>
+                              <span className="text-slate-600">•</span>
+                              <span className="flex items-center gap-1 text-[11px] text-slate-400">
+                                <Activity className="w-3 h-3 text-emerald-400" />
+                                Last query: {new Date(branch.last_queried_at).toLocaleTimeString()}
+                              </span>
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>

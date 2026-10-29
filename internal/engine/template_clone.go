@@ -2,9 +2,12 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -366,6 +369,7 @@ func (e *Engine) ListBranches(ctx context.Context, activeBranch string) ([]Branc
 
 		parent := "main"
 		createdAt := time.Now().UTC()
+		var lastQueried time.Time
 		if rec, ok := records[branchName]; ok {
 			if rec.ParentBranch != "" {
 				parent = rec.ParentBranch
@@ -373,13 +377,26 @@ func (e *Engine) ListBranches(ctx context.Context, activeBranch string) ([]Branc
 			if !rec.CreatedAt.IsZero() {
 				createdAt = rec.CreatedAt
 			}
+			if !rec.LastQueriedAt.IsZero() {
+				lastQueried = rec.LastQueriedAt
+			}
 		}
+
+		ageDays := int(time.Since(createdAt).Hours() / 24)
+		refTime := createdAt
+		if !lastQueried.IsZero() {
+			refTime = lastQueried
+		}
+		isStale := !isBase && time.Since(refTime) > 7*24*time.Hour
 
 		branches = append(branches, BranchInfo{
 			Name:              branchName,
 			DatabaseName:      datname,
 			ParentBranch:      parent,
 			CreatedAt:         createdAt,
+			LastQueriedAt:     lastQueried,
+			IsStale:           isStale,
+			AgeDays:           ageDays,
 			SizeBytes:         sizeBytes,
 			SizePretty:        sizePretty,
 			ActiveConnections: activeConn,
@@ -676,8 +693,9 @@ func (e *Engine) DryRunMigration(ctx context.Context, branchName, migrationSQL s
 // BRANCH PRUNING (GARBAGE COLLECTION)
 // -------------------------------------------------------------
 
-// PruneBranches identifies and deletes branch databases whose Git branches have been merged or deleted.
-func (e *Engine) PruneBranches(ctx context.Context, activeGitBranches []string, dryRun bool) (*PruneResult, error) {
+// PruneBranches identifies and deletes branch databases whose Git branches have been merged, deleted,
+// or whose inactivity exceeds the specified TTL duration.
+func (e *Engine) PruneBranches(ctx context.Context, activeGitBranches []string, ttl time.Duration, dryRun bool) (*PruneResult, error) {
 	if err := e.Connect(ctx); err != nil {
 		return nil, err
 	}
@@ -688,6 +706,7 @@ func (e *Engine) PruneBranches(ctx context.Context, activeGitBranches []string, 
 	}
 
 	activeMap := make(map[string]bool)
+	hasActiveList := len(activeGitBranches) > 0
 	for _, b := range activeGitBranches {
 		activeMap[strings.ToLower(strings.TrimSpace(b))] = true
 	}
@@ -700,8 +719,25 @@ func (e *Engine) PruneBranches(ctx context.Context, activeGitBranches []string, 
 			continue
 		}
 
-		// If branch is no longer present in active Git branch list
-		if !activeMap[strings.ToLower(b.Name)] {
+		shouldPrune := false
+
+		// 1. Check Git branch absence
+		if hasActiveList && !activeMap[strings.ToLower(b.Name)] {
+			shouldPrune = true
+		}
+
+		// 2. Check TTL expiration
+		if ttl > 0 {
+			refTime := b.CreatedAt
+			if !b.LastQueriedAt.IsZero() {
+				refTime = b.LastQueriedAt
+			}
+			if time.Since(refTime) > ttl {
+				shouldPrune = true
+			}
+		}
+
+		if shouldPrune {
 			toPrune = append(toPrune, b.Name)
 			reclaimedBytes += b.SizeBytes
 
@@ -845,4 +881,263 @@ func FormatSizePretty(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// -------------------------------------------------------------
+// ACTIVITY TRACKING
+// -------------------------------------------------------------
+
+// TouchBranch updates the last queried activity timestamp for a branch.
+func (e *Engine) TouchBranch(branchName string) {
+	e.meta.TouchBranch(branchName)
+}
+
+// TouchDatabase updates the last queried activity timestamp using database identifier.
+func (e *Engine) TouchDatabase(dbName string) {
+	e.meta.TouchDatabase(dbName)
+}
+
+// -------------------------------------------------------------
+// EXPLAIN (ANALYZE)
+// -------------------------------------------------------------
+
+// ExplainQuery executes EXPLAIN (ANALYZE, COSTS, BUFFERS, FORMAT JSON) against a branch database.
+func (e *Engine) ExplainQuery(ctx context.Context, targetDb, query string, analyze bool) (*ExplainResult, error) {
+	if err := e.Connect(ctx); err != nil {
+		return nil, err
+	}
+
+	start := time.Now()
+	dsn := e.cfg.UpstreamDSN(targetDb)
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("failed connecting to %s: %w", targetDb, err)
+	}
+	defer pool.Close()
+
+	explainPrefix := "EXPLAIN (COSTS, BUFFERS, FORMAT JSON)"
+	if analyze {
+		explainPrefix = "EXPLAIN (ANALYZE, COSTS, BUFFERS, FORMAT JSON)"
+	}
+	explainSQL := fmt.Sprintf("%s %s", explainPrefix, query)
+
+	var rawJSON string
+	if err := pool.QueryRow(ctx, explainSQL).Scan(&rawJSON); err != nil {
+		return nil, fmt.Errorf("explain query failed: %w", err)
+	}
+
+	var parsed []map[string]interface{}
+	if err := json.Unmarshal([]byte(rawJSON), &parsed); err != nil {
+		return nil, fmt.Errorf("failed parsing explain plan json: %w", err)
+	}
+
+	var planNode map[string]interface{}
+	var planTime, execTime float64
+	if len(parsed) > 0 {
+		top := parsed[0]
+		if p, ok := top["Plan"].(map[string]interface{}); ok {
+			planNode = p
+		}
+		if pt, ok := top["Planning Time"].(float64); ok {
+			planTime = pt
+		}
+		if et, ok := top["Execution Time"].(float64); ok {
+			execTime = et
+		}
+	}
+
+	return &ExplainResult{
+		DatabaseName:  targetDb,
+		Query:         query,
+		PlanningTime:  planTime,
+		ExecutionTime: execTime,
+		Plan:          planNode,
+		RawJSON:       rawJSON,
+		DurationMs:    time.Since(start).Milliseconds(),
+	}, nil
+}
+
+// -------------------------------------------------------------
+// CI MATRIX PROVISIONING
+// -------------------------------------------------------------
+
+// ProvisionMatrix clones N isolated databases in parallel from baseDb for CI/CD test workers.
+func (e *Engine) ProvisionMatrix(ctx context.Context, baseDb string, workers int) (*MatrixResult, error) {
+	if workers <= 0 {
+		workers = 4
+	}
+	if baseDb == "" {
+		baseDb = e.cfg.EffectiveBaseDatabase()
+	}
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	workerResults := make([]MatrixWorker, workers)
+	var firstErr error
+
+	for i := 1; i <= workers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			wStart := time.Now()
+			targetDb := fmt.Sprintf("%s_worker_%d", baseDb, workerID)
+
+			cloneRes, err := e.CreateBranch(ctx, fmt.Sprintf("ci-worker-%d", workerID), targetDb, baseDb)
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				return
+			}
+
+			w := MatrixWorker{
+				WorkerID:     workerID,
+				DatabaseName: targetDb,
+				DSN:          e.cfg.UpstreamDSN(targetDb),
+				Port:         e.cfg.UpstreamPort,
+				Host:         e.cfg.UpstreamHost,
+				DurationMs:   cloneRes.DurationMs,
+			}
+			mu.Lock()
+			workerResults[workerID-1] = w
+			mu.Unlock()
+			log.Printf("[engine-ci] Provisioned worker %d (%s) in %dms", workerID, targetDb, time.Since(wStart).Milliseconds())
+		}(i)
+	}
+
+	wg.Wait()
+	if firstErr != nil {
+		return nil, fmt.Errorf("failed provisioning CI matrix: %w", firstErr)
+	}
+
+	return &MatrixResult{
+		BaseDatabase:  baseDb,
+		Workers:       workerResults,
+		WorkerCount:   workers,
+		TotalDuration: time.Since(start).Milliseconds(),
+	}, nil
+}
+
+// TeardownMatrix drops all worker databases provisioned for CI.
+func (e *Engine) TeardownMatrix(ctx context.Context, baseDb string, workers int) error {
+	if workers <= 0 {
+		workers = 4
+	}
+	if baseDb == "" {
+		baseDb = e.cfg.EffectiveBaseDatabase()
+	}
+
+	var wg sync.WaitGroup
+	for i := 1; i <= workers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			targetDb := fmt.Sprintf("%s_worker_%d", baseDb, workerID)
+			_ = e.DropBranch(ctx, fmt.Sprintf("ci-worker-%d", workerID), targetDb)
+		}(i)
+	}
+	wg.Wait()
+	return nil
+}
+
+// -------------------------------------------------------------
+// SNAPSHOT EXPORT & IMPORT
+// -------------------------------------------------------------
+
+func findPgExecutable(bin string) string {
+	candidates := []string{
+		bin,
+		filepath.Join(`C:\Program Files\PostgreSQL\14\bin`, bin+".exe"),
+		filepath.Join(`C:\Program Files\PostgreSQL\15\bin`, bin+".exe"),
+		filepath.Join(`C:\Program Files\PostgreSQL\16\bin`, bin+".exe"),
+	}
+	for _, c := range candidates {
+		if path, err := exec.LookPath(c); err == nil {
+			return path
+		}
+	}
+	return ""
+}
+
+// ExportSnapshot dumps a snapshot database to a compressed binary archive file.
+func (e *Engine) ExportSnapshot(ctx context.Context, branchName, snapshotName, outputPath string) (*SnapshotExportResult, error) {
+	snapDb := e.snapshotDatabaseName(branchName, snapshotName)
+	if outputPath == "" {
+		outputPath = fmt.Sprintf("%s_%s.dump", git.SanitizeBranchToDatabaseName(branchName, ""), snapshotName)
+	}
+
+	start := time.Now()
+	pgDump := findPgExecutable("pg_dump")
+	if pgDump != "" {
+		cmd := exec.Command(pgDump,
+			"-h", e.cfg.UpstreamHost,
+			"-p", fmt.Sprintf("%d", e.cfg.UpstreamPort),
+			"-U", e.cfg.UpstreamUser,
+			"-Fc",
+			"-f", outputPath,
+			snapDb,
+		)
+		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", e.cfg.UpstreamPassword))
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("pg_dump failed: %s (%w)", string(out), err)
+		}
+	} else {
+		return nil, fmt.Errorf("pg_dump binary not found on host")
+	}
+
+	fi, err := os.Stat(outputPath)
+	var size int64
+	if err == nil {
+		size = fi.Size()
+	}
+
+	return &SnapshotExportResult{
+		SnapshotName: snapshotName,
+		BranchName:   branchName,
+		DatabaseName: snapDb,
+		FilePath:     outputPath,
+		SizeBytes:    size,
+		DurationMs:   time.Since(start).Milliseconds(),
+	}, nil
+}
+
+// ImportSnapshot loads a compressed database archive into a newly created branch database.
+func (e *Engine) ImportSnapshot(ctx context.Context, sourceFile, targetBranch string) (*SnapshotImportResult, error) {
+	prefix := e.cfg.EffectivePrefix()
+	targetDb := git.SanitizeBranchToDatabaseName(targetBranch, prefix)
+
+	start := time.Now()
+	_ = e.DropBranch(ctx, targetBranch, targetDb)
+
+	createSQL := fmt.Sprintf(`CREATE DATABASE %s;`, pgx.Identifier{targetDb}.Sanitize())
+	if _, err := e.pool.Exec(ctx, createSQL); err != nil {
+		return nil, fmt.Errorf("failed creating import target database %s: %w", targetDb, err)
+	}
+
+	pgRestore := findPgExecutable("pg_restore")
+	if pgRestore != "" {
+		cmd := exec.Command(pgRestore,
+			"-h", e.cfg.UpstreamHost,
+			"-p", fmt.Sprintf("%d", e.cfg.UpstreamPort),
+			"-U", e.cfg.UpstreamUser,
+			"-d", targetDb,
+			sourceFile,
+		)
+		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", e.cfg.UpstreamPassword))
+		_ = cmd.Run() // non-critical warning tolerance
+	}
+
+	size, _ := e.GetDatabaseSize(ctx, targetDb)
+	_ = e.meta.RecordBranch(targetBranch, targetDb, "imported")
+
+	return &SnapshotImportResult{
+		TargetBranch: targetBranch,
+		DatabaseName: targetDb,
+		SourceFile:   sourceFile,
+		DurationMs:   time.Since(start).Milliseconds(),
+		SizeBytes:    size,
+	}, nil
 }

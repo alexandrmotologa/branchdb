@@ -3,6 +3,9 @@ export interface BranchInfo {
   database_name: string;
   parent_branch: string;
   created_at: string;
+  last_queried_at?: string;
+  is_stale?: boolean;
+  age_days?: number;
   size_bytes: number;
   size_pretty: string;
   active_connections: number;
@@ -153,4 +156,95 @@ export interface TableDataPreview {
   total_rows: number;
   limit: number;
   offset: number;
+}
+
+export interface LoggedQuery {
+  id: number;
+  timestamp: string;
+  branch: string;
+  database: string;
+  client_addr: string;
+  query_type: string; // SELECT, INSERT, UPDATE, DELETE, DDL, TX, OTHER
+  sql: string;
+  duration_ms: number;
+}
+
+export interface ExplainPlanNode {
+  'Node Type': string;
+  'Relation Name'?: string;
+  'Alias'?: string;
+  'Startup Cost'?: number;
+  'Total Cost'?: number;
+  'Plan Rows'?: number;
+  'Plan Width'?: number;
+  'Actual Startup Time'?: number;
+  'Actual Total Time'?: number;
+  'Actual Rows'?: number;
+  'Actual Loops'?: number;
+  'Shared Hit Blocks'?: number;
+  'Shared Read Blocks'?: number;
+  'Filter'?: string;
+  'Index Cond'?: string;
+  'Plans'?: ExplainPlanNode[];
+  [key: string]: any;
+}
+
+export interface ExplainResult {
+  branch_name: string;
+  database_name: string;
+  query: string;
+  planning_time_ms: number;
+  execution_time_ms: number;
+  plan: {
+    Plan: ExplainPlanNode;
+    'Planning Time': number;
+    'Execution Time': number;
+  };
+  raw_json: string;
+}
+
+export interface SchemaConflict {
+  table: string;
+  column?: string;
+  conflict_type: string;
+  mine_summary: string;
+  theirs_summary: string;
+  recommendation: string;
+}
+
+export interface ThreeWayDiffResult {
+  base_db: string;
+  mine_db: string;
+  theirs_db: string;
+  has_conflicts: boolean;
+  conflict_count: number;
+  conflicts: SchemaConflict[];
+  safe_mine_changes: string[];
+  safe_their_changes: string[];
+  duration_ms: number;
+}
+
+export interface MaskRule {
+  table: string;
+  column: string;
+  generator: string;
+  params?: Record<string, any>;
+}
+
+export interface MaskDetail {
+  table: string;
+  column: string;
+  generator: string;
+  rows_updated: number;
+}
+
+export interface MaskResult {
+  branch_name: string;
+  database_name: string;
+  duration_ms: number;
+  tables_masked: number;
+  rows_updated: number;
+  executed_sql: string[];
+  masked_details: MaskDetail[];
+  dry_run: boolean;
 }

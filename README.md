@@ -46,9 +46,16 @@ BranchDB provides an open source, local alternative that manages database branch
 
 - **Fast Zero-Copy Branching**: Clones databases in under 500 milliseconds using PostgreSQL `TEMPLATE` cloning and filesystem copy-on-write mechanisms.
 - **Git-Aware Wire Proxy**: Listens on port 5433, parses PostgreSQL `StartupMessage` packets, and directs connections to the active Git branch database.
+- **Live Wire Protocol Query Stream**: Intercepts and inspects SQL traffic from ORMs, migrations, and application queries in a thread-safe in-memory ring-buffer.
+- **Visual EXPLAIN (ANALYZE)**: Visualizes query execution plans with node costs, actual execution time, buffer hits, and scan filters directly in the SQL Sandbox.
+- **Declarative PII Data Masking**: Anonymizes production data for development using declarative YAML rules with realistic email, name, phone, and hash generators.
+- **Parallel CI Matrix Mode**: Provisions dedicated, isolated database clones in parallel for test runners such as Jest, Vitest, or Pytest with zero state collisions.
+- **3-Way Schema Merge Conflict Analyzer**: Identifies schema collisions, column type divergences, and drop/alter clashes before merging feature branches.
+- **Auto-TTL & Activity Tracking**: Tracks query timestamps across branches and automatically prunes stale, abandoned databases.
+- **Portable Snapshot Export & Import**: Exports point-in-time branch snapshots as compressed binary archives for team sharing and backups.
 - **Destructive Testing Sandbox**: Safely run destructive migrations or test scripts on any branch. The `branchdb reset` command restores the branch from the base template in half a second.
 - **Schema Diff & Migration Generator**: Compares tables, columns, indexes, and constraints between any two branches and outputs executable forward migration SQL statements.
-- **Embedded Web Studio**: Single-binary dashboard running on port 9550 with an interactive branch hierarchy tree, schema diff viewer, live connection matrix, and SQL sandbox.
+- **Embedded Web Studio**: Single-binary dashboard running on port 9550 with an interactive branch hierarchy tree, schema diff viewer, live connection matrix, live query inspector, and SQL sandbox.
 
 ## Architecture Overview
 
@@ -135,7 +142,11 @@ branchdb list
 ### `branchdb diff [from] [to]`
 Compares schemas between two branches and prints forward SQL migration statements:
 ```bash
+# 2-way schema diff with forward migration DDL
 branchdb diff branchdb_main branchdb_feat_auth
+
+# 3-way schema conflict check between local branch and remote target
+branchdb diff --3way --theirs origin/main
 ```
 
 ### `branchdb drop <branch-name>`
@@ -145,7 +156,7 @@ branchdb drop feat/user-auth
 ```
 
 ### `branchdb snapshot <command>`
-Manages point-in-time branch checkpoints without resetting to main:
+Manages point-in-time branch checkpoints and compressed snapshot archives:
 ```bash
 # Create a snapshot of the current branch
 branchdb snapshot create checkpoint-1
@@ -156,8 +167,51 @@ branchdb snapshot list feat/user-auth
 # Restore the branch to a snapshot in under 500ms
 branchdb snapshot restore checkpoint-1
 
+# Export snapshot to a portable compressed archive file
+branchdb snapshot export checkpoint-1 --out ./backup.dump
+
+# Import a snapshot archive into a new or existing branch
+branchdb snapshot import ./backup.dump --as feat/restored-data
+
 # Delete a snapshot
 branchdb snapshot drop checkpoint-1
+```
+
+### `branchdb mask [branch-name]`
+Anonymizes sensitive customer and production PII data using declarative rules defined in `.branchdb/mask.yaml`:
+```bash
+# Preview masked columns and affected row counts
+branchdb mask feat/user-auth --dry-run
+
+# Apply masking transformations to branch database
+branchdb mask feat/user-auth --config .branchdb/mask.yaml
+```
+
+Example `.branchdb/mask.yaml`:
+```yaml
+rules:
+  - table: users
+    column: email
+    generator: faker.email
+  - table: users
+    column: full_name
+    generator: faker.name
+  - table: customers
+    column: phone_number
+    generator: faker.phone
+  - table: api_keys
+    column: secret_token
+    generator: hash.sha256
+```
+
+### `branchdb ci <command>`
+Continuous integration utilities for running test suites against isolated template database clones:
+```bash
+# Provision 4 parallel worker databases and output connection strings
+branchdb ci matrix --workers 4 --base branchdb_main --env-file .env.test
+
+# Tear down parallel worker databases after test runs complete
+branchdb ci cleanup --workers 4 --base branchdb_main
 ```
 
 ### `branchdb migrate test <file.sql>`
@@ -173,13 +227,16 @@ branchdb seed feat/user-auth --file ./seeds/test_users.sql
 ```
 
 ### `branchdb prune`
-Deletes abandoned branch databases whose Git branches were merged or deleted:
+Deletes abandoned branch databases whose Git branches were merged, deleted, or inactive beyond a configured TTL:
 ```bash
 # Preview databases eligible for cleanup
 branchdb prune --dry-run
 
 # Prune databases for branches merged into main
 branchdb prune --merged
+
+# Prune databases inactive longer than 7 days
+branchdb prune --ttl 7d
 
 # Force delete databases without an active local Git branch
 branchdb prune --force
@@ -233,7 +290,16 @@ The embedded Web Studio provides a visual dashboard for database branching, sche
 - `DELETE /api/snapshots/:name?branch=<branch>`: Deletes a snapshot checkpoint.
 - `POST /api/migrate/test`: Runs a dry-run migration in an ephemeral clone sandbox.
 - `POST /api/seed`: Executes a SQL seed script on a branch database.
-- `POST /api/prune`: Scans and cleans up orphan branch databases.
+- `POST /api/prune`: Scans and cleans up orphan branch databases with optional inactivity TTL.
+- `GET /api/queries`: Returns captured wire protocol queries from the in-memory ring-buffer.
+- `DELETE /api/queries`: Clears captured query log history.
+- `POST /api/query/explain`: Computes JSON execution plan using `EXPLAIN (ANALYZE, BUFFERS)`.
+- `POST /api/mask`: Anonymizes sensitive columns in a branch database using declarative masking rules.
+- `GET /api/diff/3way?base=<db>&mine=<db>&theirs=<db>`: Evaluates 3-way schema divergences and returns conflict analysis.
+- `POST /api/matrix`: Provisions parallel isolated worker database clones for CI test suites.
+- `DELETE /api/matrix`: Tears down parallel CI matrix databases.
+- `GET /api/snapshots/export`: Dumps a snapshot to a compressed standalone archive file.
+- `POST /api/snapshots/import`: Loads a compressed snapshot archive into a branch database.
 - `GET /api/schema/tables?db=<db>`: Lists tables and column definitions in a database.
 - `GET /api/schema/table/data?db=<db>&table=<table>&limit=<n>`: Fetches paginated rows for table data preview.
 

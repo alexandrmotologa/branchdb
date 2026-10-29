@@ -86,3 +86,10 @@ func (r *Router) InvalidateCache(dbName string) {
 		r.cache = make(map[string]bool)
 	}
 }
+
+// TouchDatabase forwards activity timestamp updates to the engine.
+func (r *Router) TouchDatabase(dbName string) {
+	if r.engine != nil {
+		r.engine.TouchDatabase(dbName)
+	}
+}

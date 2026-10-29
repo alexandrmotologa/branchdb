@@ -13,6 +13,7 @@ import (
 	"github.com/alexandrmotologa/branchdb/internal/config"
 	"github.com/alexandrmotologa/branchdb/internal/engine"
 	"github.com/alexandrmotologa/branchdb/internal/git"
+	"github.com/alexandrmotologa/branchdb/internal/masking"
 	"github.com/alexandrmotologa/branchdb/internal/proxy"
 	"github.com/alexandrmotologa/branchdb/internal/schema"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,6 +28,7 @@ type Server struct {
 	router    *proxy.Router
 	inspector *schema.Inspector
 	resolver  *git.Resolver
+	queries   *proxy.QueryRingBuffer
 	httpSrv   *http.Server
 }
 
@@ -37,6 +39,7 @@ func NewServer(
 	watcher *git.Watcher,
 	metrics *proxy.Metrics,
 	router *proxy.Router,
+	queries *proxy.QueryRingBuffer,
 ) *Server {
 	return &Server{
 		cfg:       cfg,
@@ -46,6 +49,7 @@ func NewServer(
 		router:    router,
 		inspector: schema.NewInspector(cfg),
 		resolver:  git.NewResolver(cfg.RepoPath),
+		queries:   queries,
 	}
 }
 
@@ -82,6 +86,27 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /api/tables/{name}/data", s.handleTableDataPreview)
 	mux.HandleFunc("GET /api/schema/tables", s.handleListTables)
 	mux.HandleFunc("GET /api/schema/table/data", s.handleTableDataPreview)
+
+	// Live Query Stream Observability APIs
+	mux.HandleFunc("GET /api/queries", s.handleListQueries)
+	mux.HandleFunc("DELETE /api/queries", s.handleClearQueries)
+
+	// Query Plan Explain API
+	mux.HandleFunc("POST /api/query/explain", s.handleExplainQuery)
+
+	// Data Masking API
+	mux.HandleFunc("POST /api/mask", s.handleMaskBranch)
+
+	// 3-Way Schema Diff API
+	mux.HandleFunc("GET /api/diff/3way", s.handleThreeWayDiff)
+
+	// CI Matrix APIs
+	mux.HandleFunc("POST /api/matrix", s.handleProvisionMatrix)
+	mux.HandleFunc("DELETE /api/matrix", s.handleTeardownMatrix)
+
+	// Snapshot Export & Import APIs
+	mux.HandleFunc("GET /api/snapshots/export", s.handleExportSnapshot)
+	mux.HandleFunc("POST /api/snapshots/import", s.handleImportSnapshot)
 
 	// Embedded UI / Static Fallback
 	mux.HandleFunc("GET /", s.handleStaticAssets)
@@ -529,6 +554,7 @@ func (s *Server) handleDryRunMigration(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePruneBranches(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		MergedOnly bool `json:"merged_only"`
+		TTLHours   int  `json:"ttl_hours"`
 		DryRun     bool `json:"dry_run"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
@@ -538,7 +564,7 @@ func (s *Server) handlePruneBranches(w http.ResponseWriter, r *http.Request) {
 
 	if req.MergedOnly {
 		activeBranches, err = s.resolver.ListMergedGitBranches("main")
-	} else {
+	} else if req.TTLHours == 0 {
 		activeBranches, err = s.resolver.ListAllGitBranches()
 	}
 
@@ -547,7 +573,12 @@ func (s *Server) handlePruneBranches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.engine.PruneBranches(r.Context(), activeBranches, req.DryRun)
+	var ttl time.Duration
+	if req.TTLHours > 0 {
+		ttl = time.Duration(req.TTLHours) * time.Hour
+	}
+
+	res, err := s.engine.PruneBranches(r.Context(), activeBranches, ttl, req.DryRun)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -634,4 +665,251 @@ func (s *Server) handleTableDataPreview(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, preview)
+}
+
+// -------------------------------------------------------------
+// LIVE QUERY OBSERVABILITY HANDLERS
+// -------------------------------------------------------------
+
+func (s *Server) handleListQueries(w http.ResponseWriter, r *http.Request) {
+	if s.queries == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"queries": []interface{}{}, "total": 0})
+		return
+	}
+	branch := r.URL.Query().Get("branch")
+	search := r.URL.Query().Get("search")
+	qType := r.URL.Query().Get("type")
+	limit := 100
+	if lStr := r.URL.Query().Get("limit"); lStr != "" {
+		if l, err := strconv.Atoi(lStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+	items := s.queries.List(branch, search, qType, limit)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"queries": items,
+		"total":   len(items),
+	})
+}
+
+func (s *Server) handleClearQueries(w http.ResponseWriter, r *http.Request) {
+	if s.queries != nil {
+		s.queries.Clear()
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "queries cleared"})
+}
+
+// -------------------------------------------------------------
+// EXPLAIN ANALYZE HANDLER
+// -------------------------------------------------------------
+
+func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Branch  string `json:"branch"`
+		Query   string `json:"query"`
+		Analyze bool   `json:"analyze"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Query == "" {
+		writeError(w, http.StatusBadRequest, "query payload required")
+		return
+	}
+
+	targetBranch := req.Branch
+	if targetBranch == "" {
+		targetBranch = s.watcher.CurrentBranch()
+	}
+
+	prefix := s.cfg.EffectivePrefix()
+	baseDb := s.cfg.EffectiveBaseDatabase()
+	targetDb := git.SanitizeBranchToDatabaseName(targetBranch, prefix)
+	if targetBranch == "main" || targetBranch == "master" {
+		targetDb = baseDb
+	}
+
+	res, err := s.engine.ExplainQuery(r.Context(), targetDb, req.Query, req.Analyze)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	res.BranchName = targetBranch
+
+	writeJSON(w, http.StatusOK, res)
+}
+
+// -------------------------------------------------------------
+// DATA MASKING HANDLER
+// -------------------------------------------------------------
+
+func (s *Server) handleMaskBranch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Branch string                       `json:"branch"`
+		Rules  map[string]map[string]string `json:"rules"`
+		DryRun bool                         `json:"dry_run"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request payload")
+		return
+	}
+
+	targetBranch := req.Branch
+	if targetBranch == "" {
+		targetBranch = s.watcher.CurrentBranch()
+	}
+
+	prefix := s.cfg.EffectivePrefix()
+	baseDb := s.cfg.EffectiveBaseDatabase()
+	targetDb := git.SanitizeBranchToDatabaseName(targetBranch, prefix)
+	if targetBranch == "main" || targetBranch == "master" {
+		targetDb = baseDb
+	}
+
+	cfg := engine.MaskConfig{Rules: req.Rules}
+	if len(cfg.Rules) == 0 {
+		if maskFile := masking.FindMaskConfigFile(s.cfg.RepoPath); maskFile != "" {
+			if loaded, err := masking.LoadConfig(maskFile); err == nil {
+				cfg = *loaded
+			}
+		}
+	}
+
+	if len(cfg.Rules) == 0 {
+		writeError(w, http.StatusBadRequest, "no masking rules provided or found in .branchdb/mask.yaml")
+		return
+	}
+
+	masker := masking.NewMasker()
+	dsn := s.cfg.UpstreamDSN(targetDb)
+	res, err := masker.MaskDatabase(r.Context(), dsn, targetBranch, targetDb, cfg, req.DryRun)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, res)
+}
+
+// -------------------------------------------------------------
+// 3-WAY SCHEMA DIFF HANDLER
+// -------------------------------------------------------------
+
+func (s *Server) handleThreeWayDiff(w http.ResponseWriter, r *http.Request) {
+	baseDb := r.URL.Query().Get("base")
+	mineDb := r.URL.Query().Get("mine")
+	theirsDb := r.URL.Query().Get("theirs")
+
+	if baseDb == "" {
+		baseDb = s.cfg.EffectiveBaseDatabase()
+	}
+	if mineDb == "" {
+		prefix := s.cfg.EffectivePrefix()
+		mineDb = git.SanitizeBranchToDatabaseName(s.watcher.CurrentBranch(), prefix)
+	}
+	if theirsDb == "" {
+		writeError(w, http.StatusBadRequest, "theirs database required for 3-way diff")
+		return
+	}
+
+	baseSchema, err := s.inspector.InspectDatabase(r.Context(), baseDb)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed inspecting base db %s: %v", baseDb, err))
+		return
+	}
+
+	mineSchema, err := s.inspector.InspectDatabase(r.Context(), mineDb)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed inspecting mine db %s: %v", mineDb, err))
+		return
+	}
+
+	theirsSchema, err := s.inspector.InspectDatabase(r.Context(), theirsDb)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed inspecting theirs db %s: %v", theirsDb, err))
+		return
+	}
+
+	res := schema.CompareThreeWay(baseDb, mineDb, theirsDb, baseSchema, mineSchema, theirsSchema)
+	writeJSON(w, http.StatusOK, res)
+}
+
+// -------------------------------------------------------------
+// CI MATRIX HANDLERS
+// -------------------------------------------------------------
+
+func (s *Server) handleProvisionMatrix(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BaseDatabase string `json:"base_database"`
+		Workers      int    `json:"workers"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.Workers <= 0 {
+		req.Workers = 4
+	}
+
+	res, err := s.engine.ProvisionMatrix(r.Context(), req.BaseDatabase, req.Workers)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleTeardownMatrix(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BaseDatabase string `json:"base_database"`
+		Workers      int    `json:"workers"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.Workers <= 0 {
+		req.Workers = 4
+	}
+
+	if err := s.engine.TeardownMatrix(r.Context(), req.BaseDatabase, req.Workers); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "CI matrix torn down"})
+}
+
+// -------------------------------------------------------------
+// SNAPSHOT EXPORT & IMPORT HANDLERS
+// -------------------------------------------------------------
+
+func (s *Server) handleExportSnapshot(w http.ResponseWriter, r *http.Request) {
+	snapshot := r.URL.Query().Get("snapshot")
+	branch := r.URL.Query().Get("branch")
+	outPath := r.URL.Query().Get("output")
+
+	if snapshot == "" || branch == "" {
+		writeError(w, http.StatusBadRequest, "snapshot and branch required")
+		return
+	}
+
+	res, err := s.engine.ExportSnapshot(r.Context(), branch, snapshot, outPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleImportSnapshot(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SourceFile   string `json:"source_file"`
+		TargetBranch string `json:"target_branch"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SourceFile == "" || req.TargetBranch == "" {
+		writeError(w, http.StatusBadRequest, "source_file and target_branch required")
+		return
+	}
+
+	res, err := s.engine.ImportSnapshot(r.Context(), req.SourceFile, req.TargetBranch)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, res)
 }

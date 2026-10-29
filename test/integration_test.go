@@ -409,7 +409,7 @@ func TestEndToEndBranchingAndProxy(t *testing.T) {
 
 	// 11. Test Branch Pruning
 	t.Log("Testing Branch Pruning (Garbage Collection)...")
-	pruneRes, err := eng.PruneBranches(ctx, []string{"main"}, false)
+	pruneRes, err := eng.PruneBranches(ctx, []string{"main"}, 0, false)
 	if err != nil {
 		t.Fatalf("PruneBranches failed: %v", err)
 	}

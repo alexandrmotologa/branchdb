@@ -5,6 +5,7 @@ import { SnapshotManager } from './components/SnapshotManager';
 import { SchemaDiffViewer } from './components/SchemaDiffViewer';
 import { SchemaExplorer } from './components/SchemaExplorer';
 import { ActiveConnections } from './components/ActiveConnections';
+import { QueryInspector } from './components/QueryInspector';
 import { SqlSandbox } from './components/SqlSandbox';
 import { DiskUsageBar } from './components/DiskUsageBar';
 import { BranchInfo, StatusResponse } from './types';
@@ -15,12 +16,20 @@ export const App: React.FC = () => {
   const [branches, setBranches] = useState<BranchInfo[]>([]);
   const [activeTab, setActiveTab] = useState<string>(queryTab);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  const [sandboxQuery, setSandboxQuery] = useState<string>('');
+  const [sandboxBranch, setSandboxBranch] = useState<string>('');
 
   const handleSelectTab = (tab: string) => {
     setActiveTab(tab);
     const url = new URL(window.location.href);
     url.searchParams.set('tab', tab);
     window.history.replaceState({}, '', url.toString());
+  };
+
+  const handleOpenInSandbox = (sql: string, branch: string) => {
+    setSandboxQuery(sql);
+    setSandboxBranch(branch);
+    handleSelectTab('console');
   };
 
   const fetchState = useCallback(async () => {
@@ -93,11 +102,15 @@ export const App: React.FC = () => {
     await fetchState();
   };
 
-  const handlePrune = async () => {
+  const handlePrune = async (ttlHours?: number) => {
     const res = await fetch('/api/prune', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ merged_only: false, dry_run: false }),
+      body: JSON.stringify({ 
+        merged_only: !ttlHours, 
+        ttl_hours: ttlHours || 0,
+        dry_run: false 
+      }),
     });
     if (!res.ok) {
       const err = await res.json();
@@ -153,6 +166,14 @@ export const App: React.FC = () => {
           />
         )}
 
+        {activeTab === 'queries' && (
+          <QueryInspector
+            branches={branches}
+            activeBranch={activeBranchName}
+            onOpenInSandbox={handleOpenInSandbox}
+          />
+        )}
+
         {activeTab === 'metrics' && (
           <ActiveConnections
             metrics={status?.metrics || null}
@@ -165,6 +186,8 @@ export const App: React.FC = () => {
           <SqlSandbox
             branches={branches}
             activeBranch={activeBranchName}
+            initialQuery={sandboxQuery}
+            initialBranch={sandboxBranch}
           />
         )}
       </main>

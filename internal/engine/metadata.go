@@ -10,10 +10,11 @@ import (
 
 // BranchRecord holds persistent lineage metadata.
 type BranchRecord struct {
-	Name         string    `json:"name"`
-	DatabaseName string    `json:"database_name"`
-	ParentBranch string    `json:"parent_branch"`
-	CreatedAt    time.Time `json:"created_at"`
+	Name          string    `json:"name"`
+	DatabaseName  string    `json:"database_name"`
+	ParentBranch  string    `json:"parent_branch"`
+	CreatedAt     time.Time `json:"created_at"`
+	LastQueriedAt time.Time `json:"last_queried_at,omitempty"`
 }
 
 // SnapshotRecord holds persistent snapshot metadata.
@@ -130,6 +131,34 @@ func (s *MetadataStore) RecordBranch(name, dbName, parentBranch string) error {
 	}
 	s.records[name] = rec
 	return s.save()
+}
+
+// TouchBranch updates the last queried timestamp for a branch.
+func (s *MetadataStore) TouchBranch(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, exists := s.records[name]
+	if exists {
+		rec.LastQueriedAt = time.Now().UTC()
+		s.records[name] = rec
+		_ = s.save()
+	}
+}
+
+// TouchDatabase updates the last queried timestamp using database name.
+func (s *MetadataStore) TouchDatabase(dbName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for k, rec := range s.records {
+		if rec.DatabaseName == dbName {
+			rec.LastQueriedAt = time.Now().UTC()
+			s.records[k] = rec
+			_ = s.save()
+			return
+		}
+	}
 }
 
 // RemoveBranch deletes branch lineage records.
